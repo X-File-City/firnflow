@@ -1,8 +1,12 @@
-//! Request handlers for the three slice-1c endpoints.
+//! Request handlers for the firnflow REST API.
 //!
-//! * `GET  /health`
-//! * `POST /ns/{namespace}/upsert`
-//! * `POST /ns/{namespace}/query`
+//! * `GET    /health`
+//! * `POST   /ns/{namespace}/upsert`
+//! * `POST   /ns/{namespace}/query`
+//! * `DELETE /ns/{namespace}`
+//! * `POST   /ns/{namespace}/warmup`
+//! * `POST   /ns/{namespace}/index`
+//! * `GET    /metrics`
 
 use std::sync::Arc;
 
@@ -13,7 +17,7 @@ use axum::response::IntoResponse;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use firnflow_core::{NamespaceId, QueryRequest, QueryResultSet};
+use firnflow_core::{IndexRequest, NamespaceId, QueryRequest, QueryResultSet};
 
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -145,6 +149,108 @@ pub async fn warmup(
     });
 
     Ok((StatusCode::ACCEPTED, Json(WarmupResponse { queued })))
+}
+
+/// Body of a successful index build response (HTTP 202 Accepted).
+#[derive(Debug, Serialize)]
+pub struct IndexResponse {
+    /// Confirmation that the build was queued.
+    pub status: String,
+}
+
+/// Explicit ANN index build (slice 6b).
+///
+/// Spawns a background task that builds an IVF_PQ index on the
+/// namespace's vector column and returns `202 Accepted` immediately.
+/// Same fire-and-forget pattern as warmup. Operators monitor the
+/// `firnflow_index_build_duration_seconds` histogram to know when
+/// the build completes.
+pub async fn create_index(
+    State(state): State<AppState>,
+    Path(namespace): Path<String>,
+    Json(req): Json<IndexRequest>,
+) -> Result<(StatusCode, Json<IndexResponse>), ApiError> {
+    let ns = NamespaceId::new(namespace)?;
+
+    if req.kind != "ivf_pq" {
+        return Err(ApiError(firnflow_core::FirnflowError::InvalidRequest(
+            format!(
+                "unsupported index kind {:?}, only \"ivf_pq\" is supported",
+                req.kind
+            ),
+        )));
+    }
+
+    let service = Arc::clone(&state.service);
+    let ns_owned = ns.clone();
+    tokio::spawn(async move {
+        if let Err(e) = service
+            .create_index(&ns_owned, req.num_partitions, req.num_sub_vectors)
+            .await
+        {
+            tracing::error!(
+                namespace = %ns_owned,
+                error = %e,
+                "index build failed"
+            );
+        }
+    });
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(IndexResponse {
+            status: "index build queued".into(),
+        }),
+    ))
+}
+
+/// Body of a successful compact response (HTTP 202 Accepted).
+#[derive(Debug, Serialize)]
+pub struct CompactResponse {
+    /// Confirmation that the compaction was queued.
+    pub status: String,
+}
+
+/// Explicit compaction (slice 6c).
+///
+/// Spawns a background task that merges small data files into
+/// fewer, larger ones and returns `202 Accepted` immediately.
+/// Operators monitor the `firnflow_compaction_duration_seconds`
+/// histogram to know when the compaction completes.
+pub async fn compact(
+    State(state): State<AppState>,
+    Path(namespace): Path<String>,
+) -> Result<(StatusCode, Json<CompactResponse>), ApiError> {
+    let ns = NamespaceId::new(namespace)?;
+
+    let service = Arc::clone(&state.service);
+    let ns_owned = ns.clone();
+    tokio::spawn(async move {
+        match service.compact(&ns_owned).await {
+            Ok(result) => {
+                tracing::info!(
+                    namespace = %ns_owned,
+                    fragments_removed = result.fragments_removed,
+                    fragments_added = result.fragments_added,
+                    "compaction complete"
+                );
+            }
+            Err(e) => {
+                tracing::error!(
+                    namespace = %ns_owned,
+                    error = %e,
+                    "compaction failed"
+                );
+            }
+        }
+    });
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(CompactResponse {
+            status: "compaction queued".into(),
+        }),
+    ))
 }
 
 /// Prometheus scrape endpoint. Serialises the process-wide

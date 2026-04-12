@@ -99,6 +99,7 @@ async fn service_cache_aside_invalidates_on_upsert() {
     let req = QueryRequest {
         vector: unit_vector(0),
         k: 10,
+        nprobes: None,
     };
 
     // ---- 1. upsert via service: two rows ----

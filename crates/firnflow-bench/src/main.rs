@@ -220,6 +220,7 @@ async fn main() -> anyhow::Result<()> {
         .map(|i| QueryRequest {
             vector: make_query_vector(i, cfg.dim),
             k: 10,
+            nprobes: None,
         })
         .collect();
 

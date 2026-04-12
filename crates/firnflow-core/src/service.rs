@@ -24,6 +24,7 @@ use std::time::Instant;
 use bincode::config;
 
 use crate::cache::{NamespaceCache, QueryHash};
+use crate::manager::CompactResult;
 use crate::manager::NamespaceManager;
 use crate::metrics::CoreMetrics;
 use crate::query::QueryRequest;
@@ -129,7 +130,7 @@ impl NamespaceService {
             .get_or_populate(ns, query_hash, move || async move {
                 metrics_for_populate.record_s3_request(&ns_owned, "query");
                 let result = manager
-                    .query(&ns_owned, req_owned.vector, req_owned.k)
+                    .query(&ns_owned, req_owned.vector, req_owned.k, req_owned.nprobes)
                     .await?;
                 bincode::serde::encode_to_vec(&result, config::standard())
                     .map_err(|e| FirnflowError::Backend(format!("encode result: {e}")))
@@ -143,5 +144,45 @@ impl NamespaceService {
         self.metrics
             .record_query(ns, "vector", start.elapsed().as_secs_f64());
         Ok(decoded)
+    }
+
+    /// Build an IVF_PQ index on the namespace's vector column.
+    ///
+    /// Records `firnflow_index_build_duration_seconds{namespace, kind}`
+    /// on completion — the "Index Tax" metric.
+    ///
+    /// Index build does **not** invalidate the cache. Cached results
+    /// are still correct post-build; the index is a structural
+    /// optimisation, not a data change.
+    pub async fn create_index(
+        &self,
+        ns: &NamespaceId,
+        num_partitions: Option<u32>,
+        num_sub_vectors: Option<u32>,
+    ) -> Result<(), FirnflowError> {
+        let start = Instant::now();
+        self.metrics.record_s3_request(ns, "index");
+        self.manager
+            .create_index(ns, num_partitions, num_sub_vectors)
+            .await?;
+        self.metrics
+            .record_index_build(ns, "ivf_pq", start.elapsed().as_secs_f64());
+        Ok(())
+    }
+
+    /// Compact the namespace's data files.
+    ///
+    /// Records `firnflow_compaction_duration_seconds{namespace}` on
+    /// completion. Invalidates the cache after a successful
+    /// compaction — the underlying data files change, so cached
+    /// result bytes may reference stale file offsets.
+    pub async fn compact(&self, ns: &NamespaceId) -> Result<CompactResult, FirnflowError> {
+        let start = Instant::now();
+        self.metrics.record_s3_request(ns, "compact");
+        let result = self.manager.compact(ns).await?;
+        self.cache.invalidate(ns);
+        self.metrics
+            .record_compaction(ns, start.elapsed().as_secs_f64());
+        Ok(result)
     }
 }

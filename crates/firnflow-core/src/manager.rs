@@ -31,11 +31,16 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Schema};
 use dashmap::DashMap;
 use futures::{StreamExt, TryStreamExt};
+use lancedb::index::vector::IvfPqIndexBuilder;
+use lancedb::index::Index;
 use lancedb::query::{ExecutableQuery, QueryBase};
+use lancedb::table::OptimizeAction;
+use lancedb::DistanceType;
 use object_store::aws::AmazonS3Builder;
 use object_store::path::Path as ObjectStorePath;
 use object_store::ObjectStore;
 
+use crate::query::DEFAULT_NPROBES;
 use crate::{FirnflowError, NamespaceId, QueryResult, QueryResultSet};
 
 const TABLE_NAME: &str = "data";
@@ -274,6 +279,10 @@ impl NamespaceManager {
     /// Run a nearest-neighbor vector query. Returns up to `k`
     /// results ranked by the underlying engine's distance metric.
     ///
+    /// `nprobes` controls how many IVF partitions are searched when
+    /// an index exists. Ignored for linear scans (no index).
+    /// Defaults to [`DEFAULT_NPROBES`] (20) if `None`.
+    ///
     /// The query vector's length must match the namespace's
     /// established dimension. If the namespace does not exist yet
     /// (no prior upsert), the query returns an empty result set
@@ -284,6 +293,7 @@ impl NamespaceManager {
         ns: &NamespaceId,
         vector: Vec<f32>,
         k: usize,
+        nprobes: Option<usize>,
     ) -> Result<QueryResultSet, FirnflowError> {
         let dim = match self.resolve_dim(ns).await? {
             Some(d) => d,
@@ -303,11 +313,14 @@ impl NamespaceManager {
             )));
         }
 
+        let nprobes = nprobes.unwrap_or(DEFAULT_NPROBES);
+
         let tbl = self.open_or_create_table(ns, dim).await?;
         let stream = tbl
             .query()
             .nearest_to(vector)
             .map_err(|e| FirnflowError::Backend(format!("query.nearest_to: {e}")))?
+            .nprobes(nprobes)
             .limit(k)
             .execute()
             .await
@@ -324,6 +337,89 @@ impl NamespaceManager {
             results,
         })
     }
+
+    /// Build an IVF_PQ index on the namespace's vector column.
+    ///
+    /// This is a potentially expensive operation — minutes for large
+    /// tables on S3. The caller (service/handler) is responsible for
+    /// running it in a background task if non-blocking behaviour is
+    /// desired.
+    ///
+    /// Index build does **not** invalidate the cache — cached query
+    /// results are still correct post-build. See PHASE6_PLAN.md §
+    /// "Cache invalidation and index rebuild" for the rationale.
+    pub async fn create_index(
+        &self,
+        ns: &NamespaceId,
+        num_partitions: Option<u32>,
+        num_sub_vectors: Option<u32>,
+    ) -> Result<(), FirnflowError> {
+        let dim = self.resolve_dim(ns).await?.ok_or_else(|| {
+            FirnflowError::InvalidRequest(format!(
+                "cannot index namespace {ns}: no data has been upserted yet"
+            ))
+        })?;
+
+        let tbl = self.open_or_create_table(ns, dim).await?;
+
+        let mut builder = IvfPqIndexBuilder::default().distance_type(DistanceType::L2);
+        if let Some(n) = num_partitions {
+            builder = builder.num_partitions(n);
+        }
+        if let Some(m) = num_sub_vectors {
+            builder = builder.num_sub_vectors(m);
+        }
+
+        tbl.create_index(&["vector"], Index::IvfPq(builder))
+            .execute()
+            .await
+            .map_err(|e| FirnflowError::Backend(format!("create_index: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Compact the namespace's Lance table — merge small data files
+    /// into fewer, larger ones.
+    ///
+    /// Uses `OptimizeAction::Compact` with default
+    /// `CompactionOptions` (target 1M rows per fragment). Returns
+    /// the number of fragments removed and added so the caller can
+    /// report the delta.
+    ///
+    /// Like `create_index`, this is a potentially expensive
+    /// operation and the caller should run it in a background task.
+    pub async fn compact(&self, ns: &NamespaceId) -> Result<CompactResult, FirnflowError> {
+        let dim = self.resolve_dim(ns).await?.ok_or_else(|| {
+            FirnflowError::InvalidRequest(format!(
+                "cannot compact namespace {ns}: no data has been upserted yet"
+            ))
+        })?;
+
+        let tbl = self.open_or_create_table(ns, dim).await?;
+        let stats = tbl
+            .optimize(OptimizeAction::default())
+            .await
+            .map_err(|e| FirnflowError::Backend(format!("optimize: {e}")))?;
+
+        let (removed, added) = stats
+            .compaction
+            .map(|c| (c.fragments_removed, c.fragments_added))
+            .unwrap_or((0, 0));
+
+        Ok(CompactResult {
+            fragments_removed: removed,
+            fragments_added: added,
+        })
+    }
+}
+
+/// Result of a compaction operation, exposing the fragment delta.
+#[derive(Debug, Clone)]
+pub struct CompactResult {
+    /// Number of old fragments merged away.
+    pub fragments_removed: usize,
+    /// Number of new (larger) fragments written.
+    pub fragments_added: usize,
 }
 
 /// Read the vector dimension from a Lance table's schema by

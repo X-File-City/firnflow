@@ -46,6 +46,8 @@ pub struct CoreMetrics {
     write_duration: HistogramVec,
     active_namespaces: IntGauge,
     s3_requests: IntCounterVec,
+    index_build_duration: HistogramVec,
+    compaction_duration: HistogramVec,
     seen_namespaces: DashSet<NamespaceId>,
 }
 
@@ -134,6 +136,36 @@ impl CoreMetrics {
             .register(Box::new(s3_requests.clone()))
             .map_err(metrics_err)?;
 
+        let index_build_duration = HistogramVec::new(
+            HistogramOpts::new(
+                "firnflow_index_build_duration_seconds",
+                "Time to build a vector index. The 'Index Tax' — \
+                 operators pay this once per index build in exchange \
+                 for dramatically faster queries.",
+            )
+            .buckets(vec![1.0, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0]),
+            &["namespace", "kind"],
+        )
+        .map_err(metrics_err)?;
+        registry
+            .register(Box::new(index_build_duration.clone()))
+            .map_err(metrics_err)?;
+
+        let compaction_duration = HistogramVec::new(
+            HistogramOpts::new(
+                "firnflow_compaction_duration_seconds",
+                "Time to compact a namespace's data files. Merges \
+                 small fragments into fewer, larger files to reduce \
+                 S3 round-trips on the read path.",
+            )
+            .buckets(vec![1.0, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0]),
+            &["namespace"],
+        )
+        .map_err(metrics_err)?;
+        registry
+            .register(Box::new(compaction_duration.clone()))
+            .map_err(metrics_err)?;
+
         Ok(Self {
             registry,
             cache_hits,
@@ -142,6 +174,8 @@ impl CoreMetrics {
             write_duration,
             active_namespaces,
             s3_requests,
+            index_build_duration,
+            compaction_duration,
             seen_namespaces: DashSet::new(),
         })
     }
@@ -205,6 +239,22 @@ impl CoreMetrics {
         self.s3_requests
             .with_label_values(&[ns.as_str(), operation])
             .inc();
+    }
+
+    /// Record an index build duration observation.
+    pub fn record_index_build(&self, ns: &NamespaceId, kind: &str, duration_secs: f64) {
+        self.touch(ns);
+        self.index_build_duration
+            .with_label_values(&[ns.as_str(), kind])
+            .observe(duration_secs);
+    }
+
+    /// Record a compaction duration observation.
+    pub fn record_compaction(&self, ns: &NamespaceId, duration_secs: f64) {
+        self.touch(ns);
+        self.compaction_duration
+            .with_label_values(&[ns.as_str()])
+            .observe(duration_secs);
     }
 }
 
