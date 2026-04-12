@@ -1,20 +1,23 @@
-# firnflow
+# Firn
 
-**firnflow** is a high-performance, multi-tenant vector and full-text search engine backed by object storage (S3 / MinIO / R2 / GCS). It is designed as a credible open-source alternative to turbopuffer, proving that a professional-grade tiered storage architecture (**RAM -> NVMe -> S3**) is achievable entirely from open-source components.
+**Firn** is a high-performance, multi-tenant vector and full-text search engine backed by object storage (S3 / MinIO / R2 / GCS). It is designed as a credible open-source alternative to turbopuffer, proving that a professional-grade tiered storage architecture (**RAM → NVMe → S3**) is achievable entirely from open-source components.
 
-The cost efficiency of S3 with the speed of local RAM. A multi-tenant vector and full-text search engine backed by S3. Built with LanceDB and Foyer for sub-microsecond search latency on top of object storage.
+The cost efficiency of S3 with the speed of local RAM. A multi-tenant vector and full-text search engine backed by S3. Built with LanceDB and Foyer for microsecond-scale search latency on top of object storage.
 
-## The Headline: 5,616x Faster Search
+## The Headline: 25 Seconds to 72 Microseconds
 
-By pairing **LanceDB** (search on S3) with **foyer** (RAM + NVMe hybrid cache), firnflow delivers the cost efficiency of object storage with the latency of local memory:
+On real-world cloud infrastructure (AWS S3), a raw linear scan of 100,000 vectors can take **25 seconds** per query. By pairing **LanceDB** with a tiered **foyer** (RAM + NVMe) cache, **Firn** collapses that bottleneck:
 
-*   **Cold Query (S3):** ~15ms
-*   **Warm Query (Cache):** ~0.002ms
-*   **S3 Savings:** Every cache hit results in **zero** S3 requests, directly reducing your cloud bill.
+*   **Cold Query (S3 Linear Scan):** ~25.1s
+*   **Cold Query (ANN Indexed):** ~979ms (**25x faster**)
+*   **Warm Query (Internal Engine):** **~72µs** (**350,000x faster**)
+*   **End-to-End HTTP (Warm):** **< 5ms** (including network RTT and JSON overhead)
+
+Every cache hit results in **zero** S3 requests, directly reducing your cloud bill while providing "instant" search response times.
 
 ## Architecture
 
-firnflow is built on a "Tiered Storage" philosophy:
+**Firn** is built on a "Tiered Storage" philosophy:
 
 1.  **L1: RAM Cache** (via foyer) — Sub-microsecond access for the most frequent queries.
 2.  **L2: NVMe Cache** (via foyer) — Fast, durable cache for high-volume search results.
@@ -37,7 +40,7 @@ firnflow is built on a "Tiered Storage" philosophy:
 ## Quickstart
 
 ### 1. Launch the Stack
-Everything you need (MinIO storage + Firnflow API) is orchestrated via Docker Compose:
+Everything you need (MinIO storage + Firn API) is orchestrated via Docker Compose:
 
 ```bash
 git clone https://github.com/gordonmurray/firnflow
@@ -85,10 +88,13 @@ curl http://localhost:3000/metrics | grep s3_requests
 | `/ns/{ns}/upsert` | `POST` | Insert/update vectors and data |
 | `/ns/{ns}/query` | `POST` | Vector, FTS, or hybrid search |
 | `/ns/{ns}/warmup` | `POST` | Non-blocking cache pre-warm hint |
+| `/ns/{ns}/index` | `POST` | Build IVF_PQ vector index (async, returns 202) |
+| `/ns/{ns}/fts-index` | `POST` | Build BM25 full-text search index (async, returns 202) |
+| `/ns/{ns}/compact` | `POST` | Compact and prune data files (async, returns 202) |
 
 ## Development and Benchmarking
 
-firnflow uses a containerized toolchain. No local Rust installation is required.
+**Firn** uses a containerized toolchain. No local Rust installation is required.
 
 ```bash
 # Run the full test suite (requires MinIO)
