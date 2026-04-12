@@ -130,7 +130,7 @@ async fn put_object_with_if_none_match_rejects_second_write_aws() {
         return;
     }
     let client = aws_client().await;
-    let bucket = env_or("FIRNFLOW_AWS_BUCKET", "lakestream-spike2-cloudfloe");
+    let bucket = env_or("FIRNFLOW_AWS_BUCKET", "firnflow-cloudfloe");
     // NOTE: we do not call `ensure_bucket` here. On real AWS the
     // bucket is pre-provisioned with public access blocked and should
     // remain reusable across runs; a CreateBucket attempt in the wrong

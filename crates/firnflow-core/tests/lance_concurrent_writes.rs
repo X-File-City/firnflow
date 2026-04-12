@@ -171,7 +171,7 @@ async fn concurrent_writers_preserve_all_rows_aws() {
         eprintln!("SKIP: AWS_PROFILE not set — real-AWS spike-2b needs a configured CLI profile");
         return;
     }
-    let bucket = env_or("FIRNFLOW_AWS_BUCKET", "lakestream-spike2-cloudfloe");
+    let bucket = env_or("FIRNFLOW_AWS_BUCKET", "firnflow-cloudfloe");
     let uri_base = format!("s3://{bucket}");
     run_stress(uri_base, aws_storage_options()).await;
 }
@@ -202,7 +202,7 @@ async fn concurrent_writers_100_runs_aws() {
         return;
     }
     const RUNS: usize = 100;
-    let bucket = env_or("FIRNFLOW_AWS_BUCKET", "lakestream-spike2-cloudfloe");
+    let bucket = env_or("FIRNFLOW_AWS_BUCKET", "firnflow-cloudfloe");
     let uri_base = format!("s3://{bucket}");
     let opts = aws_storage_options();
     for run in 1..=RUNS {

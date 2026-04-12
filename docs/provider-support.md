@@ -53,7 +53,7 @@ This is easy to miss because compilation succeeds without the feature.
   `016230046494`, `terraform-user`).
 - **Region**: `eu-west-1` (no region configured on the profile; set
   via `AWS_REGION`, matches the CLAUDE.md default).
-- **Test bucket**: `lakestream-spike2-cloudfloe` (created 2026-04-11,
+- **Test bucket**: `firnflow-cloudfloe` (created 2026-04-11,
   public access blocked per the global CLAUDE.md S3 defaults).
 - **First validated**: 2026-04-11
 
@@ -107,11 +107,11 @@ This is easy to miss because compilation succeeds without the feature.
 
 ## Known housekeeping
 
-The `lakestream-spike2-cloudfloe` bucket accumulates one namespace
+The `firnflow-cloudfloe` bucket accumulates one namespace
 prefix per stress iteration (100 per 100-run invocation). Each
 namespace holds an empty seed batch + 8 small append batches,
 ~a few KB per run. There is no automatic cleanup yet; prune with
-`aws s3 rm --recursive s3://lakestream-spike2-cloudfloe/spike2b-*`
+`aws s3 rm --recursive s3://firnflow-cloudfloe/spike2b-*`
 under `AWS_PROFILE=cloudfloe` when the bucket's object count gets
 annoying. Consider adding a `spike2-cleanup` `#[ignore]`'d test or
 shell script if this becomes routine.
