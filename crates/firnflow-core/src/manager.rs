@@ -23,14 +23,15 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use arrow_array::builder::{FixedSizeListBuilder, Float32Builder};
+use arrow_array::builder::{FixedSizeListBuilder, Float32Builder, StringBuilder};
 use arrow_array::{
     Array, ArrayRef, FixedSizeListArray, Float32Array, RecordBatch, RecordBatchIterator,
-    RecordBatchReader, UInt64Array,
+    RecordBatchReader, StringArray, UInt64Array,
 };
 use arrow_schema::{DataType, Field, Schema};
 use dashmap::DashMap;
 use futures::{StreamExt, TryStreamExt};
+use lancedb::index::scalar::{FtsIndexBuilder, FullTextSearchQuery};
 use lancedb::index::vector::IvfPqIndexBuilder;
 use lancedb::index::Index;
 use lancedb::query::{ExecutableQuery, QueryBase};
@@ -45,6 +46,29 @@ use crate::{FirnflowError, NamespaceId, QueryResult, QueryResultSet};
 
 const TABLE_NAME: &str = "data";
 const DISTANCE_COLUMN: &str = "_distance";
+const SCORE_COLUMN: &str = "_score";
+const RELEVANCE_COLUMN: &str = "_relevance_score";
+
+/// A single row for upsert into a namespace.
+#[derive(Debug, Clone)]
+pub struct UpsertRow {
+    /// Stable row identifier.
+    pub id: u64,
+    /// The vector — length must match the namespace's dimension.
+    pub vector: Vec<f32>,
+    /// Optional text payload for BM25 full-text search.
+    pub text: Option<String>,
+}
+
+impl From<(u64, Vec<f32>)> for UpsertRow {
+    fn from((id, vector): (u64, Vec<f32>)) -> Self {
+        Self {
+            id,
+            vector,
+            text: None,
+        }
+    }
+}
 
 /// Stateless namespace manager over an S3-backed set of Lance tables.
 ///
@@ -99,6 +123,7 @@ impl NamespaceManager {
                 ),
                 false,
             ),
+            Field::new("text", DataType::Utf8, true),
         ]))
     }
 
@@ -177,7 +202,7 @@ impl NamespaceManager {
     pub async fn upsert(
         &self,
         ns: &NamespaceId,
-        rows: Vec<(u64, Vec<f32>)>,
+        rows: Vec<UpsertRow>,
     ) -> Result<(), FirnflowError> {
         if rows.is_empty() {
             return Ok(());
@@ -187,7 +212,7 @@ impl NamespaceManager {
         let dim = match self.resolve_dim(ns).await? {
             Some(d) => d,
             None => {
-                let d = rows[0].1.len();
+                let d = rows[0].vector.len();
                 if d == 0 {
                     return Err(FirnflowError::InvalidRequest(
                         "row id 0: vector is empty".into(),
@@ -198,11 +223,12 @@ impl NamespaceManager {
         };
 
         // Validate every row.
-        for (id, v) in &rows {
-            if v.len() != dim {
+        for row in &rows {
+            if row.vector.len() != dim {
                 return Err(FirnflowError::InvalidRequest(format!(
-                    "row id {id}: vector length {}, expected {dim}",
-                    v.len(),
+                    "row id {}: vector length {}, expected {dim}",
+                    row.id,
+                    row.vector.len(),
                 )));
             }
         }
@@ -276,29 +302,29 @@ impl NamespaceManager {
         Ok(Arc::new(store))
     }
 
-    /// Run a nearest-neighbor vector query. Returns up to `k`
-    /// results ranked by the underlying engine's distance metric.
+    /// Run a search query. Supports three modes:
     ///
-    /// `nprobes` controls how many IVF partitions are searched when
-    /// an index exists. Ignored for linear scans (no index).
-    /// Defaults to [`DEFAULT_NPROBES`] (20) if `None`.
+    /// - **Vector-only** (`vector` non-empty, `text` is `None`):
+    ///   nearest-neighbour search via `nearest_to`.
+    /// - **FTS-only** (`vector` empty, `text` is `Some`): BM25
+    ///   full-text search via `full_text_search`.
+    /// - **Hybrid** (`vector` non-empty, `text` is `Some`): combined
+    ///   vector + FTS via Reciprocal Rank Fusion (lancedb handles
+    ///   the fusion internally when both are set on a VectorQuery).
     ///
-    /// The query vector's length must match the namespace's
-    /// established dimension. If the namespace does not exist yet
-    /// (no prior upsert), the query returns an empty result set
-    /// rather than an error — same behaviour as querying an empty
-    /// table.
+    /// `nprobes` controls how many IVF partitions are searched for
+    /// vector queries. Defaults to [`DEFAULT_NPROBES`] (20).
     pub async fn query(
         &self,
         ns: &NamespaceId,
         vector: Vec<f32>,
         k: usize,
         nprobes: Option<usize>,
+        text: Option<String>,
     ) -> Result<QueryResultSet, FirnflowError> {
         let dim = match self.resolve_dim(ns).await? {
             Some(d) => d,
             None => {
-                // Namespace doesn't exist yet — return empty.
                 return Ok(QueryResultSet {
                     query_id: String::new(),
                     results: Vec::new(),
@@ -306,7 +332,16 @@ impl NamespaceManager {
             }
         };
 
-        if vector.len() != dim {
+        let has_vector = !vector.is_empty();
+        let has_text = text.is_some();
+
+        if !has_vector && !has_text {
+            return Err(FirnflowError::InvalidRequest(
+                "query must have at least a vector or a text field".into(),
+            ));
+        }
+
+        if has_vector && vector.len() != dim {
             return Err(FirnflowError::InvalidRequest(format!(
                 "query vector length {}, expected {dim}",
                 vector.len(),
@@ -314,17 +349,33 @@ impl NamespaceManager {
         }
 
         let nprobes = nprobes.unwrap_or(DEFAULT_NPROBES);
-
         let tbl = self.open_or_create_table(ns, dim).await?;
-        let stream = tbl
-            .query()
-            .nearest_to(vector)
-            .map_err(|e| FirnflowError::Backend(format!("query.nearest_to: {e}")))?
-            .nprobes(nprobes)
-            .limit(k)
-            .execute()
-            .await
-            .map_err(|e| FirnflowError::Backend(format!("query.execute: {e}")))?;
+
+        let stream = if has_vector {
+            // Vector-only or hybrid (lancedb auto-detects hybrid when
+            // both nearest_to and full_text_search are set).
+            let mut vq = tbl
+                .query()
+                .nearest_to(vector)
+                .map_err(|e| FirnflowError::Backend(format!("query.nearest_to: {e}")))?
+                .nprobes(nprobes)
+                .limit(k);
+            if let Some(ref t) = text {
+                vq = vq.full_text_search(FullTextSearchQuery::new(t.clone()));
+            }
+            vq.execute()
+                .await
+                .map_err(|e| FirnflowError::Backend(format!("query.execute: {e}")))?
+        } else {
+            // FTS-only
+            let t = text.unwrap();
+            tbl.query()
+                .full_text_search(FullTextSearchQuery::new(t))
+                .limit(k)
+                .execute()
+                .await
+                .map_err(|e| FirnflowError::Backend(format!("fts.execute: {e}")))?
+        };
 
         let batches: Vec<RecordBatch> = stream
             .try_collect()
@@ -374,6 +425,25 @@ impl NamespaceManager {
             .execute()
             .await
             .map_err(|e| FirnflowError::Backend(format!("create_index: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Build a BM25 full-text search index on the namespace's `text`
+    /// column. Requires that at least some rows have been upserted
+    /// with non-null `text` values.
+    pub async fn create_fts_index(&self, ns: &NamespaceId) -> Result<(), FirnflowError> {
+        let dim = self.resolve_dim(ns).await?.ok_or_else(|| {
+            FirnflowError::InvalidRequest(format!(
+                "cannot create FTS index on namespace {ns}: no data has been upserted yet"
+            ))
+        })?;
+
+        let tbl = self.open_or_create_table(ns, dim).await?;
+        tbl.create_index(&["text"], Index::FTS(FtsIndexBuilder::default()))
+            .execute()
+            .await
+            .map_err(|e| FirnflowError::Backend(format!("create_fts_index: {e}")))?;
 
         Ok(())
     }
@@ -444,26 +514,55 @@ async fn read_dim_from_table(tbl: &lancedb::Table) -> Result<usize, FirnflowErro
 fn rows_to_batch(
     schema: &Arc<Schema>,
     dim: usize,
-    rows: Vec<(u64, Vec<f32>)>,
+    rows: Vec<UpsertRow>,
 ) -> Result<RecordBatch, FirnflowError> {
     let n = rows.len();
-    let ids = UInt64Array::from_iter_values(rows.iter().map(|(id, _)| *id));
+    let ids = UInt64Array::from_iter_values(rows.iter().map(|r| r.id));
 
     let values_builder = Float32Builder::with_capacity(n * dim);
     let mut list_builder = FixedSizeListBuilder::new(values_builder, dim as i32);
-    for (_, vector) in &rows {
-        for &v in vector {
+    for row in &rows {
+        for &v in &row.vector {
             list_builder.values().append_value(v);
         }
         list_builder.append(true);
     }
     let vectors = list_builder.finish();
 
+    let mut text_builder = StringBuilder::with_capacity(n, n * 64);
+    for row in &rows {
+        match &row.text {
+            Some(t) => text_builder.append_value(t),
+            None => text_builder.append_null(),
+        }
+    }
+    let texts = text_builder.finish();
+
     RecordBatch::try_new(
         schema.clone(),
-        vec![Arc::new(ids) as ArrayRef, Arc::new(vectors) as ArrayRef],
+        vec![
+            Arc::new(ids) as ArrayRef,
+            Arc::new(vectors) as ArrayRef,
+            Arc::new(texts) as ArrayRef,
+        ],
     )
     .map_err(|e| FirnflowError::Backend(format!("batch build: {e}")))
+}
+
+/// Find the score column in a result batch. Lance uses different
+/// column names depending on query type:
+/// - `_distance` for vector queries
+/// - `_score` for FTS queries
+/// - `_relevance_score` for hybrid queries
+fn find_score_column(batch: &RecordBatch) -> Option<&Float32Array> {
+    for name in [RELEVANCE_COLUMN, DISTANCE_COLUMN, SCORE_COLUMN] {
+        if let Some(col) = batch.column_by_name(name) {
+            if let Some(arr) = col.as_any().downcast_ref::<Float32Array>() {
+                return Some(arr);
+            }
+        }
+    }
+    None
 }
 
 fn batches_to_results(batches: &[RecordBatch]) -> Result<Vec<QueryResult>, FirnflowError> {
@@ -483,16 +582,17 @@ fn batches_to_results(batches: &[RecordBatch]) -> Result<Vec<QueryResult>, Firnf
             .ok_or_else(|| {
                 FirnflowError::Backend("query result: vector not FixedSizeList".into())
             })?;
-        let distances = batch
-            .column_by_name(DISTANCE_COLUMN)
-            .ok_or_else(|| {
-                FirnflowError::Backend(format!("query result: missing {DISTANCE_COLUMN} column"))
-            })?
-            .as_any()
-            .downcast_ref::<Float32Array>()
-            .ok_or_else(|| {
-                FirnflowError::Backend(format!("query result: {DISTANCE_COLUMN} not Float32"))
-            })?;
+        let scores = find_score_column(batch).ok_or_else(|| {
+            FirnflowError::Backend(
+                "query result: no score column (_distance, _score, or _relevance_score)".into(),
+            )
+        })?;
+
+        // Text column is optional — present only if the namespace
+        // was upserted with text data.
+        let texts = batch
+            .column_by_name("text")
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
 
         for row in 0..batch.num_rows() {
             let vector_arr = vectors.value(row);
@@ -503,10 +603,18 @@ fn batches_to_results(batches: &[RecordBatch]) -> Result<Vec<QueryResult>, Firnf
                     FirnflowError::Backend("query result: vector inner not Float32".into())
                 })?;
             let vector: Vec<f32> = (0..vec_f32.len()).map(|i| vec_f32.value(i)).collect();
+            let text = texts.and_then(|t| {
+                if t.is_null(row) {
+                    None
+                } else {
+                    Some(t.value(row).to_owned())
+                }
+            });
             out.push(QueryResult {
                 id: ids.value(row),
-                score: distances.value(row),
+                score: scores.value(row),
                 vector,
+                text,
             });
         }
     }

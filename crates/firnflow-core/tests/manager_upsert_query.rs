@@ -16,7 +16,7 @@
 
 use std::collections::HashMap;
 
-use firnflow_core::{NamespaceId, NamespaceManager};
+use firnflow_core::{NamespaceId, NamespaceManager, UpsertRow};
 
 const DIM: usize = 8;
 
@@ -66,18 +66,18 @@ async fn upsert_then_query_returns_nearest_neighbor() {
     let ns = NamespaceId::new(unique_namespace("slice1a")).unwrap();
 
     // Four orthogonal unit vectors along the first four axes.
-    let rows = vec![
-        (1u64, unit_vector(0)),
-        (2u64, unit_vector(1)),
-        (3u64, unit_vector(2)),
-        (4u64, unit_vector(3)),
+    let rows: Vec<UpsertRow> = vec![
+        (1u64, unit_vector(0)).into(),
+        (2u64, unit_vector(1)).into(),
+        (3u64, unit_vector(2)).into(),
+        (4u64, unit_vector(3)).into(),
     ];
     manager.upsert(&ns, rows).await.expect("upsert");
 
     // Query with the exact stored vector for id=1. It must come back
     // as the top hit with ~zero distance.
     let results = manager
-        .query(&ns, unit_vector(0), 3, None)
+        .query(&ns, unit_vector(0), 3, None, None)
         .await
         .expect("query");
 
@@ -108,12 +108,12 @@ async fn upsert_validates_vector_dimension() {
     let ns = NamespaceId::new(unique_namespace("slice1a-dim")).unwrap();
 
     // Establish the namespace dimension via a valid first upsert.
-    let rows = vec![(1u64, unit_vector(0))];
+    let rows: Vec<UpsertRow> = vec![(1u64, unit_vector(0)).into()];
     manager.upsert(&ns, rows).await.expect("initial upsert");
 
     // Wrong-width vector — must fail validation before hitting the
     // backend now that the namespace dimension is established.
-    let rows = vec![(2u64, vec![1.0_f32; DIM + 1])];
+    let rows: Vec<UpsertRow> = vec![(2u64, vec![1.0_f32; DIM + 1]).into()];
     let err = manager
         .upsert(&ns, rows)
         .await

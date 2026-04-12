@@ -17,7 +17,9 @@ use axum::response::IntoResponse;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use firnflow_core::{IndexRequest, NamespaceId, QueryRequest, QueryResultSet};
+use firnflow_core::{
+    IndexRequest, NamespaceId, QueryRequest, QueryResultSet, UpsertRow as CoreUpsertRow,
+};
 
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -55,6 +57,9 @@ pub struct WarmupResponse {
 pub struct UpsertRow {
     pub id: u64,
     pub vector: Vec<f32>,
+    /// Optional text payload for full-text search.
+    #[serde(default)]
+    pub text: Option<String>,
 }
 
 /// Body of `POST /ns/{namespace}/upsert`.
@@ -84,7 +89,15 @@ pub async fn upsert(
 ) -> Result<Json<UpsertResponse>, ApiError> {
     let ns = NamespaceId::new(namespace)?;
     let count = req.rows.len();
-    let rows: Vec<(u64, Vec<f32>)> = req.rows.into_iter().map(|r| (r.id, r.vector)).collect();
+    let rows: Vec<CoreUpsertRow> = req
+        .rows
+        .into_iter()
+        .map(|r| CoreUpsertRow {
+            id: r.id,
+            vector: r.vector,
+            text: r.text,
+        })
+        .collect();
     state.service.upsert(&ns, rows).await?;
     Ok(Json(UpsertResponse { upserted: count }))
 }
@@ -200,6 +213,34 @@ pub async fn create_index(
         StatusCode::ACCEPTED,
         Json(IndexResponse {
             status: "index build queued".into(),
+        }),
+    ))
+}
+
+/// Build a BM25 full-text search index on the namespace's `text`
+/// column. Same 202-async pattern as vector index build.
+pub async fn create_fts_index(
+    State(state): State<AppState>,
+    Path(namespace): Path<String>,
+) -> Result<(StatusCode, Json<IndexResponse>), ApiError> {
+    let ns = NamespaceId::new(namespace)?;
+
+    let service = Arc::clone(&state.service);
+    let ns_owned = ns.clone();
+    tokio::spawn(async move {
+        if let Err(e) = service.create_fts_index(&ns_owned).await {
+            tracing::error!(
+                namespace = %ns_owned,
+                error = %e,
+                "FTS index build failed"
+            );
+        }
+    });
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(IndexResponse {
+            status: "fts index build queued".into(),
         }),
     ))
 }

@@ -16,7 +16,7 @@ pub mod result;
 pub mod service;
 
 pub use error::FirnflowError;
-pub use manager::{CompactResult, NamespaceManager};
+pub use manager::{CompactResult, NamespaceManager, UpsertRow};
 pub use metrics::CoreMetrics;
 pub use namespace::NamespaceId;
 pub use query::{IndexRequest, QueryRequest};

@@ -16,7 +16,7 @@
 
 use std::collections::HashMap;
 
-use firnflow_core::{NamespaceId, NamespaceManager};
+use firnflow_core::{NamespaceId, NamespaceManager, UpsertRow};
 
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
@@ -69,7 +69,13 @@ async fn three_namespaces_with_different_dims() {
 
     // ---- upsert into each namespace with its own dimension ----
     manager
-        .upsert(&ns4, vec![(1, unit_vector(4, 0)), (2, unit_vector(4, 1))])
+        .upsert(
+            &ns4,
+            vec![
+                UpsertRow::from((1, unit_vector(4, 0))),
+                UpsertRow::from((2, unit_vector(4, 1))),
+            ],
+        )
         .await
         .expect("upsert dim=4");
 
@@ -77,9 +83,9 @@ async fn three_namespaces_with_different_dims() {
         .upsert(
             &ns8,
             vec![
-                (1, unit_vector(8, 0)),
-                (2, unit_vector(8, 1)),
-                (3, unit_vector(8, 2)),
+                UpsertRow::from((1, unit_vector(8, 0))),
+                UpsertRow::from((2, unit_vector(8, 1))),
+                UpsertRow::from((3, unit_vector(8, 2))),
             ],
         )
         .await
@@ -88,7 +94,10 @@ async fn three_namespaces_with_different_dims() {
     manager
         .upsert(
             &ns16,
-            vec![(1, unit_vector(16, 0)), (2, unit_vector(16, 1))],
+            vec![
+                UpsertRow::from((1, unit_vector(16, 0))),
+                UpsertRow::from((2, unit_vector(16, 1))),
+            ],
         )
         .await
         .expect("upsert dim=16");
@@ -100,7 +109,7 @@ async fn three_namespaces_with_different_dims() {
 
     // ---- query each namespace independently ----
     let r4 = manager
-        .query(&ns4, unit_vector(4, 0), 2, None)
+        .query(&ns4, unit_vector(4, 0), 2, None, None)
         .await
         .expect("query dim=4");
     assert_eq!(r4.results.len(), 2, "ns4 should have 2 rows");
@@ -112,7 +121,7 @@ async fn three_namespaces_with_different_dims() {
     assert_eq!(r4.results[0].id, 1, "nearest neighbour in ns4 is id=1");
 
     let r8 = manager
-        .query(&ns8, unit_vector(8, 0), 3, None)
+        .query(&ns8, unit_vector(8, 0), 3, None, None)
         .await
         .expect("query dim=8");
     assert_eq!(r8.results.len(), 3, "ns8 should have 3 rows");
@@ -123,7 +132,7 @@ async fn three_namespaces_with_different_dims() {
     );
 
     let r16 = manager
-        .query(&ns16, unit_vector(16, 0), 2, None)
+        .query(&ns16, unit_vector(16, 0), 2, None, None)
         .await
         .expect("query dim=16");
     assert_eq!(r16.results.len(), 2, "ns16 should have 2 rows");
@@ -135,7 +144,7 @@ async fn three_namespaces_with_different_dims() {
 
     // ---- wrong-width upsert into an established namespace ----
     let err = manager
-        .upsert(&ns4, vec![(99, unit_vector(8, 0))])
+        .upsert(&ns4, vec![UpsertRow::from((99, unit_vector(8, 0)))])
         .await
         .expect_err("upsert dim=8 vector into dim=4 namespace must fail");
     let msg = format!("{err}");
@@ -146,7 +155,7 @@ async fn three_namespaces_with_different_dims() {
 
     // ---- wrong-width query against an established namespace ----
     let err = manager
-        .query(&ns8, unit_vector(4, 0), 1, None)
+        .query(&ns8, unit_vector(4, 0), 1, None, None)
         .await
         .expect_err("query dim=4 vector against dim=8 namespace must fail");
     let msg = format!("{err}");
@@ -167,7 +176,13 @@ async fn first_upsert_infers_dim_and_validates_remaining_rows() {
 
     // Row 0 has dim=4, row 1 has dim=6 — must fail with a clear error.
     let err = manager
-        .upsert(&ns, vec![(1, vec![1.0; 4]), (2, vec![1.0; 6])])
+        .upsert(
+            &ns,
+            vec![
+                UpsertRow::from((1u64, vec![1.0; 4])),
+                UpsertRow::from((2u64, vec![1.0; 6])),
+            ],
+        )
         .await
         .expect_err("mixed-width upsert must fail");
     let msg = format!("{err}");

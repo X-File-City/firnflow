@@ -11,14 +11,20 @@ use serde::{Deserialize, Serialize};
 /// index exists. Matches lancedb's own default (20).
 pub const DEFAULT_NPROBES: usize = 20;
 
-/// Parameters of a vector nearest-neighbour query.
+/// Parameters of a search query.
 ///
-/// The `vector` must match the namespace's established dimension;
-/// validation happens at the manager boundary. `k` bounds the
-/// number of results the caller wants back.
+/// Supports three query modes depending on which fields are set:
+/// - **Vector-only**: `vector` set, `text` absent → nearest-neighbour search
+/// - **FTS-only**: `text` set, `vector` absent → BM25 full-text search
+/// - **Hybrid**: both `vector` and `text` set → combined vector + FTS via RRF
+///
+/// The `vector` (when present) must match the namespace's established
+/// dimension; validation happens at the manager boundary.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QueryRequest {
-    /// The query vector.
+    /// The query vector for nearest-neighbour search. Required for
+    /// vector and hybrid queries; omit for FTS-only.
+    #[serde(default)]
     pub vector: Vec<f32>,
     /// Maximum number of results to return.
     pub k: usize,
@@ -27,6 +33,11 @@ pub struct QueryRequest {
     /// omitted.
     #[serde(default)]
     pub nprobes: Option<usize>,
+    /// Full-text search query string. When set alongside `vector`,
+    /// triggers hybrid search (vector + FTS combined via RRF).
+    /// When set without `vector`, triggers FTS-only search.
+    #[serde(default)]
+    pub text: Option<String>,
 }
 
 /// Parameters for an explicit index build request.

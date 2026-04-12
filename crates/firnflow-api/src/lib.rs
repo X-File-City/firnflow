@@ -29,6 +29,10 @@ pub fn router(state: AppState) -> Router {
         .route("/ns/{namespace}/query", post(handlers::query))
         .route("/ns/{namespace}/warmup", post(handlers::warmup))
         .route("/ns/{namespace}/index", post(handlers::create_index))
+        .route(
+            "/ns/{namespace}/fts-index",
+            post(handlers::create_fts_index),
+        )
         .route("/ns/{namespace}/compact", post(handlers::compact))
         .with_state(state)
 }

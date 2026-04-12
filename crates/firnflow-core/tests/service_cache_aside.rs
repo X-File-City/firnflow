@@ -29,7 +29,7 @@ use std::sync::Arc;
 
 use firnflow_core::cache::NamespaceCache;
 use firnflow_core::metrics::test_metrics;
-use firnflow_core::{NamespaceId, NamespaceManager, NamespaceService, QueryRequest};
+use firnflow_core::{NamespaceId, NamespaceManager, NamespaceService, QueryRequest, UpsertRow};
 
 const DIM: usize = 8;
 
@@ -100,11 +100,18 @@ async fn service_cache_aside_invalidates_on_upsert() {
         vector: unit_vector(0),
         k: 10,
         nprobes: None,
+        text: None,
     };
 
     // ---- 1. upsert via service: two rows ----
     service
-        .upsert(&ns, vec![(1, unit_vector(0)), (2, unit_vector(1))])
+        .upsert(
+            &ns,
+            vec![
+                UpsertRow::from((1, unit_vector(0))),
+                UpsertRow::from((2, unit_vector(1))),
+            ],
+        )
         .await
         .expect("service.upsert initial");
 
@@ -122,7 +129,7 @@ async fn service_cache_aside_invalidates_on_upsert() {
 
     // ---- 4. side-channel upsert via manager, bypassing the cache ----
     manager
-        .upsert(&ns, vec![(3, unit_vector(2))])
+        .upsert(&ns, vec![UpsertRow::from((3, unit_vector(2)))])
         .await
         .expect("manager.upsert bypass");
 
@@ -138,7 +145,7 @@ async fn service_cache_aside_invalidates_on_upsert() {
 
     // ---- 6. upsert via service: bumps generation, evicts stale ----
     service
-        .upsert(&ns, vec![(4, unit_vector(3))])
+        .upsert(&ns, vec![UpsertRow::from((4, unit_vector(3)))])
         .await
         .expect("service.upsert invalidating");
 

@@ -52,7 +52,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use firnflow_core::cache::NamespaceCache;
-use firnflow_core::{CoreMetrics, NamespaceId, NamespaceManager, NamespaceService, QueryRequest};
+use firnflow_core::{
+    CoreMetrics, NamespaceId, NamespaceManager, NamespaceService, QueryRequest, UpsertRow,
+};
 
 struct BenchConfig {
     bucket: String,
@@ -220,8 +222,8 @@ async fn upsert_rows(
     let mut offset = 0;
     while offset < total_rows {
         let end = (offset + batch_size).min(total_rows);
-        let rows: Vec<(u64, Vec<f32>)> = (offset..end)
-            .map(|i| (i as u64, make_vector(i, dim)))
+        let rows: Vec<UpsertRow> = (offset..end)
+            .map(|i| (i as u64, make_vector(i, dim)).into())
             .collect();
         service.upsert(ns, rows).await?;
         offset = end;
@@ -266,7 +268,8 @@ async fn main() -> anyhow::Result<()> {
         .map(|i| QueryRequest {
             vector: make_query_vector(i, cfg.dim),
             k: 10,
-            nprobes: None, // linear scan phase uses default
+            nprobes: None,
+            text: None,
         })
         .collect();
 
@@ -275,6 +278,7 @@ async fn main() -> anyhow::Result<()> {
             vector: make_query_vector(i, cfg.dim),
             k: 10,
             nprobes: Some(cfg.nprobes),
+            text: None,
         })
         .collect();
 

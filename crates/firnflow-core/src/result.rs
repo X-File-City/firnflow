@@ -14,12 +14,17 @@ use serde::{Deserialize, Serialize};
 pub struct QueryResult {
     /// Stable row id from the underlying Lance table.
     pub id: u64,
-    /// Similarity score — the metric (cosine, L2, BM25, …) is
-    /// determined by the query; the cache does not interpret it.
+    /// Similarity score — the metric (cosine, L2, BM25, hybrid
+    /// relevance) is determined by the query type; the cache does
+    /// not interpret it.
     pub score: f32,
     /// The stored vector that produced this hit. Width is fixed per
     /// namespace; the cache serialises the literal bytes.
     pub vector: Vec<f32>,
+    /// The stored text for this hit, if the namespace has a text
+    /// column and the row was upserted with text.
+    #[serde(default)]
+    pub text: Option<String>,
 }
 
 /// A full query response: ranked hits plus an opaque tracing id.

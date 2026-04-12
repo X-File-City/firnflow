@@ -24,8 +24,7 @@ use std::time::Instant;
 use bincode::config;
 
 use crate::cache::{NamespaceCache, QueryHash};
-use crate::manager::CompactResult;
-use crate::manager::NamespaceManager;
+use crate::manager::{CompactResult, NamespaceManager, UpsertRow};
 use crate::metrics::CoreMetrics;
 use crate::query::QueryRequest;
 use crate::{FirnflowError, NamespaceId, QueryResultSet};
@@ -66,7 +65,7 @@ impl NamespaceService {
     pub async fn upsert(
         &self,
         ns: &NamespaceId,
-        rows: Vec<(u64, Vec<f32>)>,
+        rows: Vec<UpsertRow>,
     ) -> Result<(), FirnflowError> {
         let start = Instant::now();
         self.metrics.record_s3_request(ns, "upsert");
@@ -130,7 +129,13 @@ impl NamespaceService {
             .get_or_populate(ns, query_hash, move || async move {
                 metrics_for_populate.record_s3_request(&ns_owned, "query");
                 let result = manager
-                    .query(&ns_owned, req_owned.vector, req_owned.k, req_owned.nprobes)
+                    .query(
+                        &ns_owned,
+                        req_owned.vector,
+                        req_owned.k,
+                        req_owned.nprobes,
+                        req_owned.text,
+                    )
                     .await?;
                 bincode::serde::encode_to_vec(&result, config::standard())
                     .map_err(|e| FirnflowError::Backend(format!("encode result: {e}")))
@@ -141,8 +146,14 @@ impl NamespaceService {
             bincode::serde::decode_from_slice(&payload, config::standard())
                 .map_err(|e| FirnflowError::Backend(format!("decode result: {e}")))?;
 
+        let query_type = match (req.vector.is_empty(), req.text.is_some()) {
+            (false, true) => "hybrid",
+            (false, false) => "vector",
+            (true, true) => "fts",
+            (true, false) => "vector", // shouldn't happen — manager validates
+        };
         self.metrics
-            .record_query(ns, "vector", start.elapsed().as_secs_f64());
+            .record_query(ns, query_type, start.elapsed().as_secs_f64());
         Ok(decoded)
     }
 
@@ -167,6 +178,17 @@ impl NamespaceService {
             .await?;
         self.metrics
             .record_index_build(ns, "ivf_pq", start.elapsed().as_secs_f64());
+        Ok(())
+    }
+
+    /// Build a BM25 full-text search index on the namespace's `text`
+    /// column.
+    pub async fn create_fts_index(&self, ns: &NamespaceId) -> Result<(), FirnflowError> {
+        let start = Instant::now();
+        self.metrics.record_s3_request(ns, "fts_index");
+        self.manager.create_fts_index(ns).await?;
+        self.metrics
+            .record_index_build(ns, "fts", start.elapsed().as_secs_f64());
         Ok(())
     }
 
