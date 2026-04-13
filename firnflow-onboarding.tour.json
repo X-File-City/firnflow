@@ -1,0 +1,159 @@
+{
+  "id": "firnflow-onboarding",
+  "title": "Firnflow Onboarding Tour",
+  "description": "Tour the Firn tiered-storage vector and full-text search engine, from the public API through the core storage and caching layers.",
+  "version": "1.0.0",
+  "audience": "New Developers",
+  "prerequisites": [
+    "Familiarity with Rust and Cargo workspaces",
+    "Basic understanding of vector search and object storage"
+  ],
+  "steps": [
+    {
+      "id": "step-1-overview",
+      "title": "Project Overview",
+      "description": "Firn is a multi-tenant vector and full-text search engine backed by object storage. Start here for a bird's-eye view of the whole project.",
+      "estimatedTime": 60,
+      "focusDirectory": "",
+      "colorMode": "fileTypes"
+    },
+    {
+      "id": "step-2-workspace-layout",
+      "title": "Cargo Workspace",
+      "description": "Firn is organized as a Rust workspace split into three crates: one for the HTTP layer, one for the storage and cache engine, and one for benchmarking.",
+      "estimatedTime": 90,
+      "focusDirectory": "crates",
+      "highlightLayers": [
+        {
+          "id": "workspace-crates",
+          "name": "Workspace Crates",
+          "color": "#3b82f6",
+          "items": [
+            { "path": "crates/firnflow-api", "type": "directory" },
+            { "path": "crates/firnflow-core", "type": "directory" },
+            { "path": "crates/firnflow-bench", "type": "directory" }
+          ],
+          "opacity": 0.7,
+          "renderStrategy": "border"
+        }
+      ],
+      "colorMode": "fileTypes"
+    },
+    {
+      "id": "step-3-api-layer",
+      "title": "API Layer (axum)",
+      "description": "The API crate exposes the REST interface. It contains the process entry point, request handlers for upsert and query, shared application state, and runtime configuration loading.",
+      "estimatedTime": 120,
+      "focusDirectory": "crates/firnflow-api/src",
+      "highlightLayers": [
+        {
+          "id": "api-entrypoints",
+          "name": "API Entrypoints",
+          "color": "#10b981",
+          "items": [
+            { "path": "crates/firnflow-api/src/main.rs", "type": "file" },
+            { "path": "crates/firnflow-api/src/handlers.rs", "type": "file" },
+            { "path": "crates/firnflow-api/src/state.rs", "type": "file" },
+            { "path": "crates/firnflow-api/src/config.rs", "type": "file" }
+          ],
+          "opacity": 0.75,
+          "renderStrategy": "border"
+        }
+      ],
+      "colorMode": "fileTypes"
+    },
+    {
+      "id": "step-4-core-engine",
+      "title": "Core Storage Engine",
+      "description": "The core crate is where the real work happens: namespace isolation, query execution, the tiered cache, and operational metrics all live here.",
+      "estimatedTime": 180,
+      "focusDirectory": "crates/firnflow-core/src",
+      "highlightLayers": [
+        {
+          "id": "core-modules",
+          "name": "Core Modules",
+          "color": "#f59e0b",
+          "items": [
+            { "path": "crates/firnflow-core/src/manager.rs", "type": "file" },
+            { "path": "crates/firnflow-core/src/namespace.rs", "type": "file" },
+            { "path": "crates/firnflow-core/src/query.rs", "type": "file" },
+            { "path": "crates/firnflow-core/src/service.rs", "type": "file" },
+            { "path": "crates/firnflow-core/src/metrics.rs", "type": "file" }
+          ],
+          "opacity": 0.75,
+          "renderStrategy": "border"
+        },
+        {
+          "id": "cache-tier",
+          "name": "Tiered Cache (RAM + NVMe via foyer)",
+          "color": "#ef4444",
+          "items": [
+            { "path": "crates/firnflow-core/src/cache", "type": "directory" }
+          ],
+          "opacity": 0.8,
+          "renderStrategy": "border"
+        }
+      ],
+      "colorMode": "fileTypes"
+    },
+    {
+      "id": "step-5-benchmarks",
+      "title": "Benchmarks",
+      "description": "The benchmarking crate drives the cold-versus-warm performance story, and a companion directory holds the demo recordings and captured results.",
+      "estimatedTime": 90,
+      "focusDirectory": "",
+      "highlightLayers": [
+        {
+          "id": "bench-layer",
+          "name": "Benchmarking",
+          "color": "#8b5cf6",
+          "items": [
+            { "path": "crates/firnflow-bench", "type": "directory" },
+            { "path": "bench", "type": "directory" }
+          ],
+          "opacity": 0.75,
+          "renderStrategy": "border"
+        }
+      ],
+      "colorMode": "fileTypes"
+    },
+    {
+      "id": "step-6-deployment",
+      "title": "Deployment & Configuration",
+      "description": "Local development is orchestrated with Docker Compose, bringing up MinIO alongside Firn. The workspace manifest defines the crates, and separate container definitions build the production and development images.",
+      "estimatedTime": 90,
+      "focusDirectory": "",
+      "highlightLayers": [
+        {
+          "id": "deploy-files",
+          "name": "Deployment Files",
+          "color": "#06b6d4",
+          "items": [
+            { "path": "Cargo.toml", "type": "file" },
+            { "path": "Cargo.lock", "type": "file" },
+            { "path": "Dockerfile", "type": "file" },
+            { "path": "Dockerfile.dev", "type": "file" },
+            { "path": "docker-compose.yml", "type": "file" },
+            { "path": "scripts", "type": "directory" }
+          ],
+          "opacity": 0.75,
+          "renderStrategy": "border"
+        }
+      ],
+      "colorMode": "fileTypes"
+    },
+    {
+      "id": "step-7-docs-and-next",
+      "title": "Docs & Next Steps",
+      "description": "That wraps the tour. The documentation site covers architecture, quickstart, API reference, deployment, monitoring, and configuration. Start with the project readme, then dive into the tiered cache module to see how the performance story is delivered.",
+      "estimatedTime": 60,
+      "focusDirectory": "",
+      "colorMode": "fileTypes"
+    }
+  ],
+  "metadata": {
+    "author": "Michael Flannery",
+    "createdAt": "2026-04-13T00:00:00.000Z",
+    "tags": ["onboarding", "rust", "vector-search", "s3", "cache"]
+  }
+}
