@@ -4,6 +4,7 @@ target/
 .github/
 bench/results/
 docs/
+notes/
 *.md
 PHASE*.md
 phase*_blog.md

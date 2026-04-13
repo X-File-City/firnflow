@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Firn - Multi-tenant vector search on object storage</title>
+  <meta name="description" content="High-performance multi-tenant vector and full-text search engine backed by S3. Open-source alternative to turbopuffer built with LanceDB and foyer.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="page-home">
+
+<header class="site-header">
+  <a href="index.html" class="logo">firn<span>flow</span></a>
+  <nav>
+    <a href="quickstart.html">Quickstart</a>
+    <a href="api.html">API</a>
+    <a href="configuration.html">Config</a>
+    <a href="architecture.html">Architecture</a>
+    <a href="deployment.html">Deploy</a>
+    <a href="monitoring.html">Monitoring</a>
+    <a href="https://github.com/gordonmurray/firnflow">GitHub</a>
+  </nav>
+</header>
+
+<div class="layout">
+  <main class="content">
+
+    <div class="hero">
+      <h1>Vector search on object storage</h1>
+      <p class="subtitle">
+        A multi-tenant search engine that pairs LanceDB with a tiered RAM + NVMe cache. Every namespace lives on S3 with near-zero idle cost. Every cache hit costs zero S3 requests.
+      </p>
+      <div class="hero-actions">
+        <a href="quickstart.html" class="btn btn-primary">Get started</a>
+        <a href="https://github.com/gordonmurray/firnflow" class="btn btn-secondary">View on GitHub</a>
+      </div>
+    </div>
+
+    <div class="stats">
+      <div class="stat">
+        <div class="value">72 &micro;s</div>
+        <div class="label">Warm query latency (AWS S3)</div>
+      </div>
+      <div class="stat">
+        <div class="value">25x</div>
+        <div class="label">ANN index speedup on cold queries</div>
+      </div>
+      <div class="stat">
+        <div class="value">0</div>
+        <div class="label">S3 requests per cache hit</div>
+      </div>
+      <div class="stat">
+        <div class="value">3</div>
+        <div class="label">Search modes: vector, FTS, hybrid</div>
+      </div>
+    </div>
+
+    <h2>How it works</h2>
+    <p>
+      Firn stores every namespace under its own S3 prefix using <strong>LanceDB</strong> as the storage engine. A tiered cache powered by <strong>foyer</strong> sits in front of S3, serving repeated queries from RAM or NVMe in microseconds instead of milliseconds. Writes automatically invalidate the cache for the affected namespace using an O(1) generation counter strategy.
+    </p>
+    <p>
+      The result: your data lives cheaply on S3, but hot queries feel local. The <code>/metrics</code> endpoint shows exactly how many S3 requests the cache is saving you.
+    </p>
+
+    <h2>Documentation</h2>
+
+    <div class="card-grid">
+      <a href="quickstart.html" class="card" style="text-decoration:none;color:inherit">
+        <h3>Quickstart</h3>
+        <p>Docker Compose up, first upsert, first query, and check your metrics in under two minutes.</p>
+      </a>
+      <a href="api.html" class="card" style="text-decoration:none;color:inherit">
+        <h3>API Reference</h3>
+        <p>All nine endpoints with request and response schemas, status codes, and curl examples.</p>
+      </a>
+      <a href="configuration.html" class="card" style="text-decoration:none;color:inherit">
+        <h3>Configuration</h3>
+        <p>Environment variables for S3 backends, cache sizing, bind address, and logging.</p>
+      </a>
+      <a href="architecture.html" class="card" style="text-decoration:none;color:inherit">
+        <h3>Architecture</h3>
+        <p>Tiered storage, cache invalidation, namespace isolation, and the query and write paths.</p>
+      </a>
+      <a href="deployment.html" class="card" style="text-decoration:none;color:inherit">
+        <h3>Deployment</h3>
+        <p>Run locally with Docker Compose, deploy to production with the multi-stage Dockerfile, or connect to AWS, MinIO, or R2.</p>
+      </a>
+      <a href="monitoring.html" class="card" style="text-decoration:none;color:inherit">
+        <h3>Monitoring</h3>
+        <p>Prometheus metrics, PromQL examples, alerting rules, and Grafana dashboard guidance.</p>
+      </a>
+    </div>
+
+    <h2>Performance on real AWS S3</h2>
+    <p>Benchmarked with 100,000 vectors at 1536 dimensions (OpenAI embedding size) against <code>eu-west-1</code> S3.</p>
+
+    <table>
+      <thead>
+        <tr><th>Phase</th><th>Path</th><th>p50 latency</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Linear scan</td><td>Cold (S3)</td><td>25.14 s</td></tr>
+        <tr><td>Linear scan</td><td>Warm (cache)</td><td>66 &micro;s</td></tr>
+        <tr><td>IVF_PQ indexed</td><td>Cold (S3)</td><td>979 ms</td></tr>
+        <tr><td>IVF_PQ indexed</td><td>Warm (cache)</td><td>72 &micro;s</td></tr>
+      </tbody>
+    </table>
+
+    <p>
+      Without an index, each cache miss costs <strong>25 seconds</strong>. With IVF_PQ, that drops to under 1 second. The cache eliminates S3 entirely for repeated queries, bringing latency to microseconds regardless of index type.
+    </p>
+
+    <h2>Key technologies</h2>
+    <ul>
+      <li><strong>LanceDB</strong> - vector and BM25 search engine that runs natively on object storage.</li>
+      <li><strong>foyer</strong> - hybrid cache (RAM + NVMe) with LFU/LRU eviction policies.</li>
+      <li><strong>axum</strong> - async Rust HTTP framework.</li>
+      <li><strong>Prometheus</strong> - native metrics for cache hits, misses, and S3 cost savings.</li>
+    </ul>
+
+  </main>
+</div>
+
+<footer class="site-footer">
+  Firn is open source under the MIT License.
+  <a href="https://github.com/gordonmurray/firnflow">GitHub</a>
+</footer>
+
+<script src="main.js"></script>
+</body>
+</html>

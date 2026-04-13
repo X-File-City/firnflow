@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Quickstart - Firn</title>
+  <meta name="description" content="Get Firn running in two minutes with Docker Compose. Insert vectors, run queries, and check your cache metrics.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="site-header">
+  <button class="menu-toggle" aria-label="Toggle sidebar">
+    <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h14M3 10h14M3 14h14"/></svg>
+  </button>
+  <a href="index.html" class="logo">firn<span>flow</span></a>
+  <nav>
+    <a href="quickstart.html" class="active">Quickstart</a>
+    <a href="api.html">API</a>
+    <a href="configuration.html">Config</a>
+    <a href="architecture.html">Architecture</a>
+    <a href="deployment.html">Deploy</a>
+    <a href="monitoring.html">Monitoring</a>
+    <a href="https://github.com/gordonmurray/firnflow">GitHub</a>
+  </nav>
+</header>
+
+<div class="layout">
+  <aside class="sidebar">
+    <div class="sidebar-section">
+      <h4>Getting started</h4>
+      <a href="quickstart.html" class="active">Quickstart</a>
+      <a href="configuration.html">Configuration</a>
+      <a href="deployment.html">Deployment</a>
+    </div>
+    <div class="sidebar-section">
+      <h4>Using Firn</h4>
+      <a href="api.html">API reference</a>
+      <a href="monitoring.html">Monitoring</a>
+    </div>
+    <div class="sidebar-section">
+      <h4>Internals</h4>
+      <a href="architecture.html">Architecture</a>
+    </div>
+  </aside>
+
+  <main class="content">
+    <h1>Quickstart</h1>
+    <p class="subtitle">Get Firn running locally in under two minutes. All you need is Docker.</p>
+
+    <h2>Prerequisites</h2>
+    <ul>
+      <li><a href="https://docs.docker.com/get-docker/">Docker</a> and Docker Compose V2</li>
+    </ul>
+
+    <h2>1. Clone and start the stack</h2>
+    <p>This launches MinIO (local S3) and the Firn API server together.</p>
+    <pre><code>git clone https://github.com/gordonmurray/firnflow
+cd firnflow
+docker compose up --build</code></pre>
+
+    <p>Once you see <code>listening on 0.0.0.0:3000</code>, the API is ready. MinIO is available at <code>localhost:9000</code> (API) and <code>localhost:9001</code> (console, credentials: <code>minioadmin</code> / <code>minioadmin</code>).</p>
+
+    <h2>2. Check health</h2>
+    <pre><code>curl http://localhost:3000/health</code></pre>
+    <p>Expected response:</p>
+    <pre><code>ok</code></pre>
+
+    <h2>3. Upsert vectors</h2>
+    <p>Insert a few vectors into the <code>demo</code> namespace. Firn auto-detects the vector dimension from the first upsert.</p>
+    <pre><code>curl -X POST http://localhost:3000/ns/demo/upsert \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "rows": [
+      {"id": 1, "vector": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]},
+      {"id": 2, "vector": [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]},
+      {"id": 3, "vector": [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0]}
+    ]
+  }'</code></pre>
+    <p>Response:</p>
+    <pre><code>{"upserted": 3}</code></pre>
+
+    <h2>4. Query for nearest neighbours</h2>
+    <p>Search the <code>demo</code> namespace for the 2 closest vectors.</p>
+    <pre><code>curl -X POST http://localhost:3000/ns/demo/query \
+  -H 'Content-Type: application/json' \
+  -d '{"vector": [1.0, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], "k": 2}'</code></pre>
+    <p>Response (first query hits S3, populates the cache):</p>
+    <pre><code>{
+  "query_id": "a1b2c3d4",
+  "results": [
+    {"id": 1, "score": 0.01, "vector": [1.0, 0.0, ...], "text": null},
+    {"id": 2, "score": 0.99, "vector": [0.0, 1.0, ...], "text": null}
+  ]
+}</code></pre>
+
+    <div class="callout callout-info">
+      <div class="callout-title">Cache in action</div>
+      Run the same query again. The second call returns from cache with zero S3 requests. You can verify this at <code>/metrics</code>.
+    </div>
+
+    <h2>5. Add text for full-text search</h2>
+    <p>Upsert rows with both vectors and text, then build an FTS index.</p>
+    <pre><code># Upsert with text
+curl -X POST http://localhost:3000/ns/articles/upsert \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "rows": [
+      {"id": 1, "vector": [1.0, 0.0, 0.0, 0.0], "text": "Introduction to vector databases"},
+      {"id": 2, "vector": [0.0, 1.0, 0.0, 0.0], "text": "Full-text search with BM25 scoring"},
+      {"id": 3, "vector": [0.0, 0.0, 1.0, 0.0], "text": "Hybrid search combines vector and text"}
+    ]
+  }'
+
+# Build the FTS index (async, returns 202)
+curl -X POST http://localhost:3000/ns/articles/fts-index</code></pre>
+
+    <p>Then run a text search:</p>
+    <pre><code>curl -X POST http://localhost:3000/ns/articles/query \
+  -H 'Content-Type: application/json' \
+  -d '{"text": "vector databases", "k": 2}'</code></pre>
+
+    <p>Or a hybrid search (vector + text together):</p>
+    <pre><code>curl -X POST http://localhost:3000/ns/articles/query \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "vector": [0.9, 0.1, 0.0, 0.0],
+    "text": "vector databases",
+    "k": 2
+  }'</code></pre>
+
+    <h2>6. Check the metrics</h2>
+    <p>See exactly how many S3 requests Firn has saved you.</p>
+    <pre><code>curl -s http://localhost:3000/metrics | grep firnflow</code></pre>
+    <p>Key lines to look for:</p>
+    <pre><code>firnflow_cache_hits_total{namespace="demo"} 1
+firnflow_cache_misses_total{namespace="demo"} 1
+firnflow_s3_requests_total{namespace="demo",operation="query"} 1</code></pre>
+    <p>The cache miss count stays at 1 no matter how many times you repeat the same query. Every subsequent hit is free.</p>
+
+    <h2>Next steps</h2>
+    <ul>
+      <li><a href="api.html">API reference</a> - all nine endpoints with full request and response schemas</li>
+      <li><a href="configuration.html">Configuration</a> - tune cache sizes, connect to AWS S3, and set up different storage backends</li>
+      <li><a href="deployment.html">Deployment</a> - run Firn in production with Docker or on Kubernetes</li>
+      <li><a href="monitoring.html">Monitoring</a> - Prometheus metrics, PromQL examples, and alerting rules</li>
+    </ul>
+
+  </main>
+</div>
+
+<footer class="site-footer">
+  Firn is open source under the MIT License.
+  <a href="https://github.com/gordonmurray/firnflow">GitHub</a>
+</footer>
+
+<script src="main.js"></script>
+</body>
+</html>

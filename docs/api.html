@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>API Reference - Firn</title>
+  <meta name="description" content="Complete REST API reference for Firn. All endpoints, request and response schemas, status codes, and curl examples.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="site-header">
+  <button class="menu-toggle" aria-label="Toggle sidebar">
+    <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h14M3 10h14M3 14h14"/></svg>
+  </button>
+  <a href="index.html" class="logo">firn<span>flow</span></a>
+  <nav>
+    <a href="quickstart.html">Quickstart</a>
+    <a href="api.html" class="active">API</a>
+    <a href="configuration.html">Config</a>
+    <a href="architecture.html">Architecture</a>
+    <a href="deployment.html">Deploy</a>
+    <a href="monitoring.html">Monitoring</a>
+    <a href="https://github.com/gordonmurray/firnflow">GitHub</a>
+  </nav>
+</header>
+
+<div class="layout">
+  <aside class="sidebar">
+    <div class="sidebar-section">
+      <h4>Getting started</h4>
+      <a href="quickstart.html">Quickstart</a>
+      <a href="configuration.html">Configuration</a>
+      <a href="deployment.html">Deployment</a>
+    </div>
+    <div class="sidebar-section">
+      <h4>Using Firn</h4>
+      <a href="api.html" class="active">API reference</a>
+      <a href="monitoring.html">Monitoring</a>
+    </div>
+    <div class="sidebar-section">
+      <h4>Internals</h4>
+      <a href="architecture.html">Architecture</a>
+    </div>
+  </aside>
+
+  <main class="content">
+    <h1>API Reference</h1>
+    <p class="subtitle">All request and response bodies are JSON. The base URL defaults to <code>http://localhost:3000</code>.</p>
+
+    <h2>Namespaces</h2>
+    <p>Every data operation is scoped to a namespace. Namespace names must be lowercase alphanumeric with hyphens, and no longer than 64 characters. Each namespace maps to an isolated S3 prefix <code>s3://bucket/namespace/</code>.</p>
+    <p>Valid: <code>my-project</code>, <code>embeddings-v2</code>, <code>prod-search</code>.<br>
+    Invalid: <code>My_Project</code> (uppercase and underscores), <code>a-very-long-name-that-exceeds-the-sixty-four-character-limit-imposed-by-firn</code>.</p>
+
+    <h2>Endpoints</h2>
+
+    <!-- GET /health -->
+    <div class="endpoint">
+      <div class="endpoint-header" aria-expanded="true">
+        <span class="method method-get">GET</span>
+        <span class="endpoint-path">/health</span>
+        <span class="endpoint-desc">Liveness check</span>
+      </div>
+      <div class="endpoint-body">
+        <p>Returns <code>200 OK</code> with body <code>ok</code>. Use this for load balancer health checks and container readiness probes.</p>
+        <h4>Example</h4>
+        <pre><code>curl http://localhost:3000/health</code></pre>
+        <h4>Response</h4>
+        <pre><code>ok</code></pre>
+      </div>
+    </div>
+
+    <!-- GET /metrics -->
+    <div class="endpoint">
+      <div class="endpoint-header" aria-expanded="true">
+        <span class="method method-get">GET</span>
+        <span class="endpoint-path">/metrics</span>
+        <span class="endpoint-desc">Prometheus metrics</span>
+      </div>
+      <div class="endpoint-body">
+        <p>Returns all Prometheus metrics in text exposition format (<code>text/plain; version=0.0.4</code>). See the <a href="monitoring.html">monitoring guide</a> for the full metric list and PromQL examples.</p>
+        <h4>Example</h4>
+        <pre><code>curl http://localhost:3000/metrics</code></pre>
+      </div>
+    </div>
+
+    <!-- POST /ns/{ns}/upsert -->
+    <div class="endpoint">
+      <div class="endpoint-header" aria-expanded="true">
+        <span class="method method-post">POST</span>
+        <span class="endpoint-path">/ns/{namespace}/upsert</span>
+        <span class="endpoint-desc">Insert or update vectors and text</span>
+      </div>
+      <div class="endpoint-body">
+        <p>Appends rows to the namespace's Lance table. The vector dimension is inferred from the first upsert and enforced on subsequent calls. After a successful write, all cached query results for this namespace are invalidated.</p>
+
+        <h4>Request body</h4>
+        <table>
+          <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>rows</code></td><td>array</td><td>Yes</td><td>List of rows to insert</td></tr>
+            <tr><td><code>rows[].id</code></td><td>u64</td><td>Yes</td><td>Unique identifier for the row</td></tr>
+            <tr><td><code>rows[].vector</code></td><td>float32[]</td><td>Yes</td><td>Dense vector (dimension must match the namespace)</td></tr>
+            <tr><td><code>rows[].text</code></td><td>string</td><td>No</td><td>Text payload for full-text search</td></tr>
+          </tbody>
+        </table>
+
+        <h4>Response (200)</h4>
+        <table>
+          <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>upserted</code></td><td>integer</td><td>Number of rows accepted</td></tr>
+          </tbody>
+        </table>
+
+        <h4>Example</h4>
+        <pre><code>curl -X POST http://localhost:3000/ns/demo/upsert \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "rows": [
+      {"id": 1, "vector": [1.0, 0.0, 0.0, 0.0], "text": "hello world"},
+      {"id": 2, "vector": [0.0, 1.0, 0.0, 0.0]}
+    ]
+  }'</code></pre>
+        <pre><code>{"upserted": 2}</code></pre>
+
+        <h4>Errors</h4>
+        <ul>
+          <li><code>400</code> - invalid namespace name or vector dimension mismatch</li>
+          <li><code>500</code> - S3 write failure (client gets generic error; full details logged server-side)</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- POST /ns/{ns}/query -->
+    <div class="endpoint">
+      <div class="endpoint-header" aria-expanded="true">
+        <span class="method method-post">POST</span>
+        <span class="endpoint-path">/ns/{namespace}/query</span>
+        <span class="endpoint-desc">Vector, full-text, or hybrid search</span>
+      </div>
+      <div class="endpoint-body">
+        <p>Queries the namespace through the cache-aside path. On a cache hit, the result is returned from RAM or NVMe with zero S3 access. On a miss, the query runs against S3 via LanceDB and the result is cached.</p>
+
+        <h4>Query modes</h4>
+        <p>The query mode is determined by which fields are present:</p>
+        <table>
+          <thead><tr><th>Mode</th><th><code>vector</code></th><th><code>text</code></th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td>Vector</td><td>set</td><td>absent</td><td>Nearest-neighbour search (L2 distance)</td></tr>
+            <tr><td>FTS</td><td>absent</td><td>set</td><td>BM25 full-text search (requires FTS index)</td></tr>
+            <tr><td>Hybrid</td><td>set</td><td>set</td><td>Both, fused via Reciprocal Rank Fusion (RRF)</td></tr>
+          </tbody>
+        </table>
+
+        <h4>Request body</h4>
+        <table>
+          <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>vector</code></td><td>float32[]</td><td>No*</td><td>Query vector for nearest-neighbour search</td></tr>
+            <tr><td><code>k</code></td><td>integer</td><td>Yes</td><td>Number of results to return</td></tr>
+            <tr><td><code>nprobes</code></td><td>integer</td><td>No</td><td>IVF partitions to probe (default 20). Higher values trade latency for recall.</td></tr>
+            <tr><td><code>text</code></td><td>string</td><td>No*</td><td>Text query for full-text or hybrid search</td></tr>
+          </tbody>
+        </table>
+        <p><small>* At least one of <code>vector</code> or <code>text</code> must be present.</small></p>
+
+        <h4>Response (200)</h4>
+        <table>
+          <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>query_id</code></td><td>string</td><td>Deterministic hash of the query parameters (the cache key)</td></tr>
+            <tr><td><code>results</code></td><td>array</td><td>Ordered list of matching rows</td></tr>
+            <tr><td><code>results[].id</code></td><td>u64</td><td>Row identifier</td></tr>
+            <tr><td><code>results[].score</code></td><td>float32</td><td>Distance (vector), BM25 score (FTS), or relevance score (hybrid)</td></tr>
+            <tr><td><code>results[].vector</code></td><td>float32[]</td><td>The stored vector</td></tr>
+            <tr><td><code>results[].text</code></td><td>string?</td><td>The stored text (null if none)</td></tr>
+          </tbody>
+        </table>
+
+        <h4>Examples</h4>
+        <p>Vector search:</p>
+        <pre><code>curl -X POST http://localhost:3000/ns/demo/query \
+  -H 'Content-Type: application/json' \
+  -d '{"vector": [1.0, 0.0, 0.0, 0.0], "k": 5}'</code></pre>
+
+        <p>Full-text search:</p>
+        <pre><code>curl -X POST http://localhost:3000/ns/demo/query \
+  -H 'Content-Type: application/json' \
+  -d '{"text": "search query terms", "k": 10}'</code></pre>
+
+        <p>Hybrid search:</p>
+        <pre><code>curl -X POST http://localhost:3000/ns/demo/query \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "vector": [1.0, 0.0, 0.0, 0.0],
+    "text": "search terms",
+    "k": 10,
+    "nprobes": 40
+  }'</code></pre>
+      </div>
+    </div>
+
+    <!-- DELETE /ns/{ns} -->
+    <div class="endpoint">
+      <div class="endpoint-header" aria-expanded="true">
+        <span class="method method-delete">DELETE</span>
+        <span class="endpoint-path">/ns/{namespace}</span>
+        <span class="endpoint-desc">Delete a namespace and all its data</span>
+      </div>
+      <div class="endpoint-body">
+        <p>Removes every S3 object under the namespace's prefix and evicts all cached query results. This is irreversible.</p>
+
+        <h4>Response (200)</h4>
+        <table>
+          <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>objects_deleted</code></td><td>integer</td><td>Number of S3 objects removed</td></tr>
+          </tbody>
+        </table>
+
+        <h4>Example</h4>
+        <pre><code>curl -X DELETE http://localhost:3000/ns/demo</code></pre>
+        <pre><code>{"objects_deleted": 12}</code></pre>
+      </div>
+    </div>
+
+    <!-- POST /ns/{ns}/warmup -->
+    <div class="endpoint">
+      <div class="endpoint-header" aria-expanded="true">
+        <span class="method method-post">POST</span>
+        <span class="endpoint-path">/ns/{namespace}/warmup</span>
+        <span class="endpoint-desc">Pre-warm the cache (async)</span>
+      </div>
+      <div class="endpoint-body">
+        <p>Accepts a list of queries and runs them in a background task to populate the cache. Returns <code>202 Accepted</code> immediately. Useful for warming the cache after a deployment or before expected traffic.</p>
+
+        <h4>Request body</h4>
+        <table>
+          <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>queries</code></td><td>QueryRequest[]</td><td>Yes</td><td>List of query objects (same schema as <code>/query</code>)</td></tr>
+          </tbody>
+        </table>
+
+        <h4>Response (202)</h4>
+        <table>
+          <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>queued</code></td><td>integer</td><td>Number of queries submitted for background execution</td></tr>
+          </tbody>
+        </table>
+
+        <h4>Example</h4>
+        <pre><code>curl -X POST http://localhost:3000/ns/demo/warmup \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "queries": [
+      {"vector": [1.0, 0.0, 0.0, 0.0], "k": 5},
+      {"vector": [0.0, 1.0, 0.0, 0.0], "k": 5}
+    ]
+  }'</code></pre>
+        <pre><code>{"queued": 2}</code></pre>
+
+        <div class="callout callout-info">
+          <div class="callout-title">Monitoring warmup progress</div>
+          Watch the <code>firnflow_cache_misses_total</code> metric to track how many warmup queries have completed. Failures inside the background task are logged server-side but do not affect the HTTP response.
+        </div>
+      </div>
+    </div>
+
+    <!-- POST /ns/{ns}/index -->
+    <div class="endpoint">
+      <div class="endpoint-header" aria-expanded="true">
+        <span class="method method-post">POST</span>
+        <span class="endpoint-path">/ns/{namespace}/index</span>
+        <span class="endpoint-desc">Build an ANN vector index (async)</span>
+      </div>
+      <div class="endpoint-body">
+        <p>Builds an IVF_PQ (Inverted File with Product Quantisation) index on the namespace's vector column. Returns <code>202 Accepted</code> and builds in the background. Building an index dramatically reduces cold query latency (25x speedup on AWS S3).</p>
+
+        <h4>Request body</h4>
+        <table>
+          <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Default</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>kind</code></td><td>string</td><td>Yes</td><td>-</td><td>Index type. Only <code>"ivf_pq"</code> is supported.</td></tr>
+            <tr><td><code>num_partitions</code></td><td>u32</td><td>No</td><td>sqrt(row_count)</td><td>Number of IVF partitions</td></tr>
+            <tr><td><code>num_sub_vectors</code></td><td>u32</td><td>No</td><td>dim / 16</td><td>Number of PQ sub-vectors (must divide dimension evenly)</td></tr>
+          </tbody>
+        </table>
+
+        <h4>Response (202)</h4>
+        <pre><code>{"status": "index build queued"}</code></pre>
+
+        <h4>Example</h4>
+        <pre><code>curl -X POST http://localhost:3000/ns/demo/index \
+  -H 'Content-Type: application/json' \
+  -d '{"kind": "ivf_pq"}'</code></pre>
+
+        <div class="callout callout-warning">
+          <div class="callout-title">Index build time</div>
+          Index builds can take minutes for large datasets (147s for 100k vectors at dim=1536 on MinIO). Monitor <code>firnflow_index_build_duration_seconds</code> to track completion. Queries against the namespace continue to work during the build using linear scan.
+        </div>
+      </div>
+    </div>
+
+    <!-- POST /ns/{ns}/fts-index -->
+    <div class="endpoint">
+      <div class="endpoint-header" aria-expanded="true">
+        <span class="method method-post">POST</span>
+        <span class="endpoint-path">/ns/{namespace}/fts-index</span>
+        <span class="endpoint-desc">Build a BM25 full-text search index (async)</span>
+      </div>
+      <div class="endpoint-body">
+        <p>Builds a BM25 full-text search index on the namespace's <code>text</code> column. Required before FTS or hybrid queries will return results. Returns <code>202 Accepted</code>.</p>
+
+        <h4>Request body</h4>
+        <p>No request body required.</p>
+
+        <h4>Response (202)</h4>
+        <pre><code>{"status": "fts index build queued"}</code></pre>
+
+        <h4>Example</h4>
+        <pre><code>curl -X POST http://localhost:3000/ns/demo/fts-index</code></pre>
+
+        <div class="callout callout-info">
+          <div class="callout-title">Prerequisite</div>
+          At least one row must have a non-null <code>text</code> field before building an FTS index.
+        </div>
+      </div>
+    </div>
+
+    <!-- POST /ns/{ns}/compact -->
+    <div class="endpoint">
+      <div class="endpoint-header" aria-expanded="true">
+        <span class="method method-post">POST</span>
+        <span class="endpoint-path">/ns/{namespace}/compact</span>
+        <span class="endpoint-desc">Compact data files (async)</span>
+      </div>
+      <div class="endpoint-body">
+        <p>Merges small Lance data fragments into fewer, larger files to reduce S3 round-trips on cold queries. Returns <code>202 Accepted</code>. Also invalidates the cache for this namespace, since file offsets change after compaction.</p>
+
+        <h4>Request body</h4>
+        <p>No request body required.</p>
+
+        <h4>Response (202)</h4>
+        <pre><code>{"status": "compaction queued"}</code></pre>
+
+        <h4>Example</h4>
+        <pre><code>curl -X POST http://localhost:3000/ns/demo/compact</code></pre>
+
+        <div class="callout callout-info">
+          <div class="callout-title">When to compact</div>
+          Compact after many small upsert batches have created fragment sprawl. The server logs <code>fragments_removed</code> and <code>fragments_added</code> when the compaction completes.
+        </div>
+      </div>
+    </div>
+
+    <h2>Error responses</h2>
+    <p>All errors return a JSON body with an <code>error</code> field.</p>
+
+    <table>
+      <thead><tr><th>Status</th><th>Cause</th><th>Example</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><code>400</code></td>
+          <td>Invalid namespace name, dimension mismatch, empty query, unsupported index kind</td>
+          <td><code>{"error": "invalid namespace: must be lowercase alphanumeric and hyphens, max 64 chars"}</code></td>
+        </tr>
+        <tr>
+          <td><code>500</code></td>
+          <td>S3 connectivity, cache failure, or internal error</td>
+          <td><code>{"error": "internal error"}</code></td>
+        </tr>
+      </tbody>
+    </table>
+    <p>On 500 errors, the full error details are logged server-side via <code>tracing::error!</code> but scrubbed from the client response to prevent leaking internal state.</p>
+
+  </main>
+</div>
+
+<footer class="site-footer">
+  Firn is open source under the MIT License.
+  <a href="https://github.com/gordonmurray/firnflow">GitHub</a>
+</footer>
+
+<script src="main.js"></script>
+</body>
+</html>

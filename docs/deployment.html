@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Deployment - Firn</title>
+  <meta name="description" content="Deploy Firn with Docker Compose for local development, or as a production container with AWS S3, MinIO, or R2.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="site-header">
+  <button class="menu-toggle" aria-label="Toggle sidebar">
+    <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h14M3 10h14M3 14h14"/></svg>
+  </button>
+  <a href="index.html" class="logo">firn<span>flow</span></a>
+  <nav>
+    <a href="quickstart.html">Quickstart</a>
+    <a href="api.html">API</a>
+    <a href="configuration.html">Config</a>
+    <a href="architecture.html">Architecture</a>
+    <a href="deployment.html" class="active">Deploy</a>
+    <a href="monitoring.html">Monitoring</a>
+    <a href="https://github.com/gordonmurray/firnflow">GitHub</a>
+  </nav>
+</header>
+
+<div class="layout">
+  <aside class="sidebar">
+    <div class="sidebar-section">
+      <h4>Getting started</h4>
+      <a href="quickstart.html">Quickstart</a>
+      <a href="configuration.html">Configuration</a>
+      <a href="deployment.html" class="active">Deployment</a>
+    </div>
+    <div class="sidebar-section">
+      <h4>Using Firn</h4>
+      <a href="api.html">API reference</a>
+      <a href="monitoring.html">Monitoring</a>
+    </div>
+    <div class="sidebar-section">
+      <h4>Internals</h4>
+      <a href="architecture.html">Architecture</a>
+    </div>
+  </aside>
+
+  <main class="content">
+    <h1>Deployment</h1>
+    <p class="subtitle">Run Firn locally with Docker Compose or deploy to production as a standalone container.</p>
+
+    <h2>Local development</h2>
+    <p>The Docker Compose file launches MinIO (local S3) alongside the Firn API. No host Rust toolchain is required.</p>
+
+    <pre><code>git clone https://github.com/gordonmurray/firnflow
+cd firnflow
+docker compose up --build</code></pre>
+
+    <p>This starts three services:</p>
+    <table>
+      <thead><tr><th>Service</th><th>Port</th><th>Purpose</th></tr></thead>
+      <tbody>
+        <tr><td><code>minio</code></td><td>9000 (S3 API), 9001 (console)</td><td>S3-compatible object storage</td></tr>
+        <tr><td><code>minio-init</code></td><td>-</td><td>One-shot: creates the <code>firnflow</code> bucket</td></tr>
+        <tr><td><code>firnflow</code></td><td>3000</td><td>Firn API server</td></tr>
+      </tbody>
+    </table>
+    <p>MinIO console: <a href="http://localhost:9001">http://localhost:9001</a> (credentials: <code>minioadmin</code> / <code>minioadmin</code>)</p>
+
+    <h3>Running just MinIO</h3>
+    <p>If you want to run Firn outside Docker (e.g. during development with a host Rust toolchain), start only MinIO:</p>
+    <pre><code># Start MinIO only
+docker compose up -d minio minio-init
+
+# Run Firn directly
+FIRNFLOW_S3_BUCKET=firnflow \
+FIRNFLOW_S3_ENDPOINT=http://127.0.0.1:9000 \
+FIRNFLOW_S3_ACCESS_KEY=minioadmin \
+FIRNFLOW_S3_SECRET_KEY=minioadmin \
+  cargo run -p firnflow-api</code></pre>
+
+    <h2>Production Docker</h2>
+    <p>The included <code>Dockerfile</code> is a multi-stage build that produces a minimal production image.</p>
+
+    <h3>Build the image</h3>
+    <pre><code>docker build -t firnflow-api .</code></pre>
+
+    <h3>Image details</h3>
+    <table>
+      <thead><tr><th>Stage</th><th>Base image</th><th>Purpose</th></tr></thead>
+      <tbody>
+        <tr><td>Builder</td><td><code>rust:1.94-bookworm</code></td><td>Compiles the release binary with protobuf support</td></tr>
+        <tr><td>Runtime</td><td><code>debian:bookworm-slim</code></td><td>Minimal image with just <code>ca-certificates</code> for TLS</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Run the container</h3>
+    <pre><code>docker run -d \
+  --name firn \
+  -p 3000:3000 \
+  -e FIRNFLOW_S3_BUCKET=my-production-bucket \
+  -e FIRNFLOW_S3_REGION=eu-west-1 \
+  -e FIRNFLOW_CACHE_MEMORY_BYTES=268435456 \
+  -e FIRNFLOW_CACHE_NVME_BYTES=10737418240 \
+  -v firn-cache:/var/lib/firnflow/cache \
+  firnflow-api</code></pre>
+
+    <div class="callout callout-info">
+      <div class="callout-title">NVMe cache volume</div>
+      Mount a fast local SSD at <code>/var/lib/firnflow/cache</code> for the NVMe tier. The cache is ephemeral: losing it only means cache misses until it warms up again. For best performance, use a <code>tmpfs</code> or NVMe-backed volume.
+    </div>
+
+    <h2>AWS deployment</h2>
+    <p>For production on AWS, Firn works best with IAM-based credentials (instance profiles, ECS task roles, or IRSA for EKS). No access keys needed.</p>
+
+    <h3>Prerequisites</h3>
+    <ol>
+      <li>An S3 bucket with public access blocked</li>
+      <li>An IAM role with <code>s3:GetObject</code>, <code>s3:PutObject</code>, <code>s3:DeleteObject</code>, <code>s3:ListBucket</code> on the bucket</li>
+      <li>A compute environment (ECS, EKS, EC2) with the IAM role attached</li>
+    </ol>
+
+    <h3>Minimal IAM policy</h3>
+    <pre><code>{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::my-firn-bucket",
+        "arn:aws:s3:::my-firn-bucket/*"
+      ]
+    }
+  ]
+}</code></pre>
+
+    <h3>ECS task definition (excerpt)</h3>
+    <pre><code>{
+  "containerDefinitions": [
+    {
+      "name": "firn",
+      "image": "firnflow-api:latest",
+      "portMappings": [{"containerPort": 3000}],
+      "environment": [
+        {"name": "FIRNFLOW_S3_BUCKET", "value": "my-firn-bucket"},
+        {"name": "FIRNFLOW_S3_REGION", "value": "eu-west-1"},
+        {"name": "FIRNFLOW_CACHE_MEMORY_BYTES", "value": "268435456"},
+        {"name": "FIRNFLOW_CACHE_NVME_BYTES", "value": "10737418240"}
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -f http://localhost:3000/health || exit 1"],
+        "interval": 10,
+        "timeout": 3,
+        "retries": 3
+      },
+      "mountPoints": [
+        {
+          "sourceVolume": "cache",
+          "containerPath": "/var/lib/firnflow/cache"
+        }
+      ]
+    }
+  ]
+}</code></pre>
+
+    <h2>Health checks</h2>
+    <p>Use <code>GET /health</code> for both liveness and readiness probes. The endpoint returns <code>200</code> with body <code>ok</code> as soon as the server is listening.</p>
+
+    <h3>Docker Compose</h3>
+    <pre><code>healthcheck:
+  test: ["CMD-SHELL", "curl -f http://localhost:3000/health || exit 1"]
+  interval: 10s
+  timeout: 3s
+  retries: 3</code></pre>
+
+    <h3>Kubernetes</h3>
+    <pre><code>livenessProbe:
+  httpGet:
+    path: /health
+    port: 3000
+  initialDelaySeconds: 5
+  periodSeconds: 10
+readinessProbe:
+  httpGet:
+    path: /health
+    port: 3000
+  initialDelaySeconds: 5
+  periodSeconds: 5</code></pre>
+
+    <h2>Cache warmup after deployment</h2>
+    <p>After a fresh deployment or restart, the cache is empty. Use the <code>/ns/{ns}/warmup</code> endpoint to pre-populate it with your most common queries:</p>
+    <pre><code>curl -X POST http://localhost:3000/ns/production/warmup \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "queries": [
+      {"vector": [1.0, 0.0, ...], "k": 10},
+      {"vector": [0.0, 1.0, ...], "k": 10}
+    ]
+  }'</code></pre>
+    <p>This returns immediately (202) and runs the queries in the background, populating the cache as it goes. Monitor <code>firnflow_cache_misses_total</code> to track warmup progress.</p>
+
+    <h2>Recommended operational setup</h2>
+    <ul>
+      <li><strong>Reverse proxy:</strong> put nginx, Caddy, or an ALB in front of Firn for TLS termination and rate limiting</li>
+      <li><strong>Prometheus scraping:</strong> scrape <code>/metrics</code> at 15s intervals</li>
+      <li><strong>Log aggregation:</strong> Firn logs structured JSON via <code>tracing</code>. Ship to your log aggregator.</li>
+      <li><strong>Cache volume:</strong> use a fast local SSD or NVMe, not networked storage</li>
+      <li><strong>Compaction schedule:</strong> run <code>/ns/{ns}/compact</code> periodically for write-heavy namespaces</li>
+    </ul>
+
+  </main>
+</div>
+
+<footer class="site-footer">
+  Firn is open source under the MIT License.
+  <a href="https://github.com/gordonmurray/firnflow">GitHub</a>
+</footer>
+
+<script src="main.js"></script>
+</body>
+</html>

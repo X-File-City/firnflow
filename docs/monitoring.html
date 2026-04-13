@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Monitoring - Firn</title>
+  <meta name="description" content="Prometheus metrics exposed by Firn, PromQL examples, alerting rules, and Grafana dashboard guidance.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="site-header">
+  <button class="menu-toggle" aria-label="Toggle sidebar">
+    <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h14M3 10h14M3 14h14"/></svg>
+  </button>
+  <a href="index.html" class="logo">firn<span>flow</span></a>
+  <nav>
+    <a href="quickstart.html">Quickstart</a>
+    <a href="api.html">API</a>
+    <a href="configuration.html">Config</a>
+    <a href="architecture.html">Architecture</a>
+    <a href="deployment.html">Deploy</a>
+    <a href="monitoring.html" class="active">Monitoring</a>
+    <a href="https://github.com/gordonmurray/firnflow">GitHub</a>
+  </nav>
+</header>
+
+<div class="layout">
+  <aside class="sidebar">
+    <div class="sidebar-section">
+      <h4>Getting started</h4>
+      <a href="quickstart.html">Quickstart</a>
+      <a href="configuration.html">Configuration</a>
+      <a href="deployment.html">Deployment</a>
+    </div>
+    <div class="sidebar-section">
+      <h4>Using Firn</h4>
+      <a href="api.html">API reference</a>
+      <a href="monitoring.html" class="active">Monitoring</a>
+    </div>
+    <div class="sidebar-section">
+      <h4>Internals</h4>
+      <a href="architecture.html">Architecture</a>
+    </div>
+  </aside>
+
+  <main class="content">
+    <h1>Monitoring</h1>
+    <p class="subtitle">Firn exposes Prometheus metrics at <code>GET /metrics</code> that give full visibility into cache effectiveness and S3 cost savings.</p>
+
+    <h2>Scrape configuration</h2>
+    <p>Add Firn to your Prometheus scrape targets:</p>
+    <pre><code># prometheus.yml
+scrape_configs:
+  - job_name: firn
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['firn:3000']</code></pre>
+    <p>The endpoint returns metrics in Prometheus text exposition format (<code>text/plain; version=0.0.4</code>).</p>
+
+    <h2>Metric reference</h2>
+
+    <h3>Cache metrics</h3>
+    <table>
+      <thead><tr><th>Metric</th><th>Type</th><th>Labels</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><code>firnflow_cache_hits_total</code></td>
+          <td>Counter</td>
+          <td><code>namespace</code></td>
+          <td>Total cache hits. Each hit means the result was served from RAM or NVMe with zero S3 access.</td>
+        </tr>
+        <tr>
+          <td><code>firnflow_cache_misses_total</code></td>
+          <td>Counter</td>
+          <td><code>namespace</code></td>
+          <td>Total cache misses. Each miss triggered a query to S3 via LanceDB and populated the cache.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Latency metrics</h3>
+    <table>
+      <thead><tr><th>Metric</th><th>Type</th><th>Labels</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><code>firnflow_query_duration_seconds</code></td>
+          <td>Histogram</td>
+          <td><code>namespace</code>, <code>query_type</code></td>
+          <td>End-to-end query latency through the cache-aside path, including serialisation. The <code>query_type</code> label is <code>vector</code>, <code>fts</code>, or <code>hybrid</code>.</td>
+        </tr>
+        <tr>
+          <td><code>firnflow_write_duration_seconds</code></td>
+          <td>Histogram</td>
+          <td><code>namespace</code></td>
+          <td>Upsert or delete latency, including cache invalidation time.</td>
+        </tr>
+        <tr>
+          <td><code>firnflow_index_build_duration_seconds</code></td>
+          <td>Histogram</td>
+          <td><code>namespace</code>, <code>kind</code></td>
+          <td>Time to build a vector or FTS index. Buckets go up to 600 seconds. The <code>kind</code> label is <code>ivf_pq</code> or <code>fts</code>.</td>
+        </tr>
+        <tr>
+          <td><code>firnflow_compaction_duration_seconds</code></td>
+          <td>Histogram</td>
+          <td><code>namespace</code></td>
+          <td>Time to compact data files. Buckets go up to 600 seconds.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Cost metrics</h3>
+    <table>
+      <thead><tr><th>Metric</th><th>Type</th><th>Labels</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><code>firnflow_s3_requests_total</code></td>
+          <td>Counter</td>
+          <td><code>namespace</code>, <code>operation</code></td>
+          <td>Number of Firn-initiated operations that hit S3. Operations: <code>query</code> (cache miss), <code>upsert</code>, <code>delete</code>. This is the primary signal for whether the cache is saving you S3 costs.</td>
+        </tr>
+        <tr>
+          <td><code>firnflow_active_namespaces</code></td>
+          <td>Gauge</td>
+          <td><em>none</em></td>
+          <td>Number of distinct namespaces that have been accessed since startup.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="callout callout-info">
+      <div class="callout-title">The key metric</div>
+      <code>firnflow_s3_requests_total</code> is the metric that proves the cache is working. Compare <code>s3_requests_total{operation="query"}</code> against <code>cache_misses_total</code>; they should be equal. The difference between total queries and cache misses is how many S3 requests the cache has eliminated.
+    </div>
+
+    <h2>PromQL examples</h2>
+
+    <h3>Cache hit rate (per namespace)</h3>
+    <p>The fraction of queries served from cache without touching S3:</p>
+    <pre><code>firnflow_cache_hits_total{namespace="production"}
+/
+(firnflow_cache_hits_total{namespace="production"} + firnflow_cache_misses_total{namespace="production"})</code></pre>
+
+    <h3>Cache hit rate (global, over 5 minutes)</h3>
+    <pre><code>sum(rate(firnflow_cache_hits_total[5m]))
+/
+(sum(rate(firnflow_cache_hits_total[5m])) + sum(rate(firnflow_cache_misses_total[5m])))</code></pre>
+
+    <h3>Query latency p50 / p99</h3>
+    <pre><code># p50
+histogram_quantile(0.50, rate(firnflow_query_duration_seconds_bucket[5m]))
+
+# p99
+histogram_quantile(0.99, rate(firnflow_query_duration_seconds_bucket[5m]))</code></pre>
+
+    <h3>S3 request rate (per namespace)</h3>
+    <pre><code>rate(firnflow_s3_requests_total{namespace="production"}[5m])</code></pre>
+
+    <h3>S3 requests saved (total avoided queries)</h3>
+    <pre><code>sum(firnflow_cache_hits_total)</code></pre>
+    <p>Each cache hit is one S3 request that did not happen.</p>
+
+    <h3>Write throughput</h3>
+    <pre><code>rate(firnflow_s3_requests_total{operation="upsert"}[5m])</code></pre>
+
+    <h2>Alerting rules</h2>
+    <p>Suggested Prometheus alerting rules for production deployments:</p>
+
+    <pre><code># alerts.yml
+groups:
+  - name: firn
+    rules:
+
+      # Cache hit rate dropping below 80% over 15 minutes
+      - alert: FirnLowCacheHitRate
+        expr: |
+          sum(rate(firnflow_cache_hits_total[15m]))
+          /
+          (sum(rate(firnflow_cache_hits_total[15m]))
+           + sum(rate(firnflow_cache_misses_total[15m])))
+          < 0.80
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Firn cache hit rate is below 80%"
+          description: >
+            The cache hit rate has been below 80% for 10 minutes.
+            This may indicate the working set exceeds cache capacity
+            or a write-heavy workload is causing frequent invalidation.
+
+      # Query latency p99 above 1 second (cold queries are slow)
+      - alert: FirnHighQueryLatency
+        expr: |
+          histogram_quantile(0.99,
+            rate(firnflow_query_duration_seconds_bucket[5m])
+          ) > 1.0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Firn query latency p99 above 1 second"
+          description: >
+            High query latency suggests frequent cache misses
+            hitting S3. Consider increasing cache size, building an
+            index, or warming the cache.
+
+      # S3 request rate spike (unexpected backend load)
+      - alert: FirnHighS3RequestRate
+        expr: |
+          sum(rate(firnflow_s3_requests_total{operation="query"}[5m])) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Firn S3 query request rate above 10/s"
+          description: >
+            The cache is not absorbing enough queries. This increases
+            S3 costs and latency. Check if the working set has
+            changed or if write-heavy invalidation is the cause.</code></pre>
+
+    <h2>Grafana dashboard</h2>
+    <p>A minimal Grafana dashboard for Firn should include these panels:</p>
+
+    <table>
+      <thead><tr><th>Panel</th><th>Type</th><th>PromQL</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>Cache hit rate</td>
+          <td>Gauge</td>
+          <td><code>sum(rate(cache_hits[5m])) / (sum(rate(cache_hits[5m])) + sum(rate(cache_misses[5m])))</code></td>
+        </tr>
+        <tr>
+          <td>Query latency (p50, p99)</td>
+          <td>Time series</td>
+          <td><code>histogram_quantile(0.50, rate(query_duration_seconds_bucket[5m]))</code></td>
+        </tr>
+        <tr>
+          <td>S3 requests/sec by operation</td>
+          <td>Time series</td>
+          <td><code>rate(s3_requests_total[5m])</code> grouped by <code>operation</code></td>
+        </tr>
+        <tr>
+          <td>S3 requests saved (counter)</td>
+          <td>Stat</td>
+          <td><code>sum(cache_hits_total)</code></td>
+        </tr>
+        <tr>
+          <td>Active namespaces</td>
+          <td>Stat</td>
+          <td><code>firnflow_active_namespaces</code></td>
+        </tr>
+        <tr>
+          <td>Write latency (p50, p99)</td>
+          <td>Time series</td>
+          <td><code>histogram_quantile(0.50, rate(write_duration_seconds_bucket[5m]))</code></td>
+        </tr>
+        <tr>
+          <td>Cache hits vs misses</td>
+          <td>Time series (stacked)</td>
+          <td><code>rate(cache_hits_total[5m])</code> and <code>rate(cache_misses_total[5m])</code></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>Interpreting the metrics</h2>
+
+    <h3>Healthy signals</h3>
+    <ul>
+      <li>Cache hit rate above 80% for read-heavy workloads</li>
+      <li><code>s3_requests_total{operation=query}</code> rate is low and stable</li>
+      <li>Query latency p99 under 10ms (warm queries dominate)</li>
+    </ul>
+
+    <h3>Warning signals</h3>
+    <ul>
+      <li><strong>Falling cache hit rate:</strong> the working set may exceed cache capacity. Increase <code>FIRNFLOW_CACHE_MEMORY_BYTES</code> or <code>FIRNFLOW_CACHE_NVME_BYTES</code>.</li>
+      <li><strong>High <code>s3_requests_total</code> rate:</strong> too many cache misses are hitting S3. This costs money and adds latency. Consider cache warmup, larger cache, or building an index.</li>
+      <li><strong>Rising query latency:</strong> if cold queries dominate, build an IVF_PQ index. If warm queries are slow, check for serialisation overhead with large result sets.</li>
+      <li><strong>Write duration spikes:</strong> may indicate S3 throttling or contention. Check S3 request metrics and consider compaction.</li>
+    </ul>
+
+  </main>
+</div>
+
+<footer class="site-footer">
+  Firn is open source under the MIT License.
+  <a href="https://github.com/gordonmurray/firnflow">GitHub</a>
+</footer>
+
+<script src="main.js"></script>
+</body>
+</html>

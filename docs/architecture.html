@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Architecture - Firn</title>
+  <meta name="description" content="How Firn works internally: tiered storage, cache invalidation, namespace isolation, and the query and write paths.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="site-header">
+  <button class="menu-toggle" aria-label="Toggle sidebar">
+    <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h14M3 10h14M3 14h14"/></svg>
+  </button>
+  <a href="index.html" class="logo">firn<span>flow</span></a>
+  <nav>
+    <a href="quickstart.html">Quickstart</a>
+    <a href="api.html">API</a>
+    <a href="configuration.html">Config</a>
+    <a href="architecture.html" class="active">Architecture</a>
+    <a href="deployment.html">Deploy</a>
+    <a href="monitoring.html">Monitoring</a>
+    <a href="https://github.com/gordonmurray/firnflow">GitHub</a>
+  </nav>
+</header>
+
+<div class="layout">
+  <aside class="sidebar">
+    <div class="sidebar-section">
+      <h4>Getting started</h4>
+      <a href="quickstart.html">Quickstart</a>
+      <a href="configuration.html">Configuration</a>
+      <a href="deployment.html">Deployment</a>
+    </div>
+    <div class="sidebar-section">
+      <h4>Using Firn</h4>
+      <a href="api.html">API reference</a>
+      <a href="monitoring.html">Monitoring</a>
+    </div>
+    <div class="sidebar-section">
+      <h4>Internals</h4>
+      <a href="architecture.html" class="active">Architecture</a>
+    </div>
+  </aside>
+
+  <main class="content">
+    <h1>Architecture</h1>
+    <p class="subtitle">How Firn turns cheap object storage into a fast, multi-tenant search engine.</p>
+
+    <h2>Tiered storage</h2>
+    <p>Firn's core idea is a three-tier storage hierarchy. Data lives permanently on S3, but queries are served from the fastest available tier:</p>
+
+    <table>
+      <thead><tr><th>Tier</th><th>Backed by</th><th>Latency</th><th>Role</th></tr></thead>
+      <tbody>
+        <tr><td><strong>L1: RAM</strong></td><td>foyer in-memory cache</td><td>sub-microsecond</td><td>Hottest queries, configurable size</td></tr>
+        <tr><td><strong>L2: NVMe</strong></td><td>foyer disk cache</td><td>microseconds</td><td>Overflow from RAM tier, larger capacity</td></tr>
+        <tr><td><strong>L3: Object storage</strong></td><td>LanceDB on S3/MinIO/R2</td><td>milliseconds to seconds</td><td>Source of truth, unlimited capacity, near-zero idle cost</td></tr>
+      </tbody>
+    </table>
+
+    <p>The cache stores complete, serialised query result sets. When a query hits the cache, zero bytes are read from S3. When it misses, the result is fetched from S3 and stored in the cache for future use.</p>
+
+    <h2>Query path</h2>
+    <p>Every query follows this exact sequence:</p>
+    <ol>
+      <li><strong>Hash the query.</strong> The full <code>QueryRequest</code> (vector, k, nprobes, text) is serialised with bincode and hashed with xxh3 to produce a deterministic <code>QueryHash</code>.</li>
+      <li><strong>Build the cache key.</strong> The key is a tuple of <code>(namespace, generation, query_hash)</code>. The generation counter ensures stale results are never returned after a write.</li>
+      <li><strong>Check foyer.</strong> The HybridCache checks RAM first, then NVMe. On a hit, the serialised result is returned and a <code>cache_hits_total</code> metric is recorded.</li>
+      <li><strong>On miss: query S3.</strong> LanceDB runs the query against the Lance table on S3 (vector nearest-neighbour, BM25 FTS, or hybrid). The result is serialised with bincode and stored in foyer. A <code>cache_misses_total</code> and <code>s3_requests_total</code> metric are recorded.</li>
+      <li><strong>Return the result.</strong> The query duration (cache hit or miss) is recorded in the <code>query_duration_seconds</code> histogram.</li>
+    </ol>
+
+    <h2>Write path</h2>
+    <p>Writes follow a strict ordering to prevent stale cache state:</p>
+    <ol>
+      <li><strong>Append to S3.</strong> Rows are appended to the namespace's Lance table via LanceDB's native append API.</li>
+      <li><strong>Invalidate the cache.</strong> Only after the S3 write succeeds, the namespace's generation counter is atomically incremented. This makes all previously cached entries for that namespace unreachable by key.</li>
+      <li><strong>Record metrics.</strong> <code>write_duration_seconds</code> and <code>s3_requests_total{operation=upsert}</code> are updated.</li>
+    </ol>
+    <p>The "invalidate after confirmed write" ordering is critical: if the S3 write fails, the cache is left untouched with valid data. There is no window where the cache is empty and queries would storm S3.</p>
+
+    <h2>Cache invalidation</h2>
+    <p>Firn uses a <strong>generation counter</strong> strategy for cache invalidation. This was chosen after evaluating several alternatives.</p>
+
+    <h3>How it works</h3>
+    <p>A <code>DashMap&lt;NamespaceId, AtomicU64&gt;</code> tracks a generation number for each namespace. The foyer cache key includes the generation:</p>
+    <pre><code>CacheKey {
+    namespace: NamespaceId,
+    generation: u64,
+    query: QueryHash,
+}</code></pre>
+    <p>On any write to a namespace, the generation is atomically incremented. All previously cached entries (at the old generation) are now unreachable by key construction. foyer's normal LFU/LRU eviction reclaims their space over time.</p>
+
+    <h3>Why this approach</h3>
+    <table>
+      <thead><tr><th>Property</th><th>Value</th></tr></thead>
+      <tbody>
+        <tr><td>Invalidation cost</td><td>O(1) per write, regardless of cached query count</td></tr>
+        <tr><td>Auxiliary memory</td><td>One <code>u64</code> per namespace (not per cache entry)</td></tr>
+        <tr><td>Race conditions</td><td>None. The generation is captured at query start, so a concurrent write cannot cause a stale result to be cached at the new generation.</td></tr>
+        <tr><td>Trade-off</td><td>Stale-generation entries remain in the cache until evicted by foyer. Under write-heavy workloads, the NVMe tier may hold unreachable entries temporarily.</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Namespace isolation</h2>
+    <p>Each namespace is a fully isolated unit:</p>
+    <ul>
+      <li><strong>S3 prefix:</strong> <code>s3://bucket/namespace/</code> - no data sharing between namespaces</li>
+      <li><strong>Vector dimension:</strong> inferred from the first upsert; subsequent upserts to the same namespace must match</li>
+      <li><strong>Cache:</strong> one shared foyer instance, but keys are scoped by namespace</li>
+      <li><strong>Lifecycle:</strong> lazy creation (no S3 objects until the first write), full cleanup on delete</li>
+    </ul>
+    <p>Cross-namespace queries are not supported and return a <code>400</code> error.</p>
+
+    <h3>Per-namespace vector dimensions</h3>
+    <p>There is no global vector dimension setting. Each namespace independently determines its dimension:</p>
+    <ul>
+      <li>On the first upsert, the dimension is inferred from the first row's vector length</li>
+      <li>On subsequent upserts, every row is validated against the resolved dimension</li>
+      <li>On re-open (after restart), the dimension is read from the existing Lance table schema</li>
+    </ul>
+    <p>This means a single Firn instance can serve namespaces at different dimensions simultaneously, for example 384-dim sentence embeddings alongside 1536-dim OpenAI embeddings.</p>
+
+    <h2>ANN index</h2>
+    <p>Firn supports explicit IVF_PQ (Inverted File with Product Quantisation) index builds via the <code>/ns/{ns}/index</code> endpoint. The index is optional; without it, queries perform a linear scan.</p>
+
+    <h3>When to build an index</h3>
+    <ul>
+      <li>Once the namespace has enough rows that cold query latency matters (usually &gt;10k vectors)</li>
+      <li>After the bulk of your data is loaded (building on a partial dataset then upserting more data degrades index quality until rebuilt)</li>
+    </ul>
+
+    <h3>Impact on latency</h3>
+    <p>On AWS S3 with 100k vectors at dim=1536:</p>
+    <table>
+      <thead><tr><th></th><th>Without index</th><th>With IVF_PQ</th><th>Speedup</th></tr></thead>
+      <tbody>
+        <tr><td>Cold query (p50)</td><td>25.14 s</td><td>979 ms</td><td>25.7x</td></tr>
+        <tr><td>Warm query (p50)</td><td>66 &micro;s</td><td>72 &micro;s</td><td>(cache dominates)</td></tr>
+      </tbody>
+    </table>
+    <p>The index matters most for cold queries. Once a result is cached, the index makes no difference.</p>
+
+    <h3>The nprobes parameter</h3>
+    <p>When an IVF_PQ index exists, the <code>nprobes</code> query parameter controls how many IVF partitions are searched. Higher values improve recall but increase latency. The default is 20.</p>
+
+    <h2>Full-text search</h2>
+    <p>Each namespace's schema includes a nullable <code>text</code> column. When text data is present and an FTS index has been built (via <code>/ns/{ns}/fts-index</code>), three query modes are available:</p>
+    <ul>
+      <li><strong>Vector-only:</strong> provide <code>vector</code>, omit <code>text</code></li>
+      <li><strong>FTS-only:</strong> provide <code>text</code>, omit <code>vector</code></li>
+      <li><strong>Hybrid:</strong> provide both. LanceDB automatically fuses results via Reciprocal Rank Fusion (RRF).</li>
+    </ul>
+
+    <h2>Compaction</h2>
+    <p>Each upsert creates a new Lance data fragment on S3. After many small upserts, the namespace accumulates many small files, which increases cold query latency (more S3 GET requests per scan). Compaction merges these fragments into fewer, larger files.</p>
+    <ul>
+      <li>Triggered explicitly via <code>POST /ns/{ns}/compact</code></li>
+      <li>Runs in the background (returns 202)</li>
+      <li>Invalidates the cache after completion (file offsets change)</li>
+      <li>Target: 1 million rows per fragment</li>
+    </ul>
+
+    <h2>Concurrency</h2>
+    <p>Firn relies on LanceDB's native concurrency model, which uses S3 conditional writes (<code>If-None-Match: *</code>) to prevent conflicts between concurrent writers. This has been stress-tested with multiple simultaneous writers on both MinIO and AWS S3, with 100 runs each showing zero row count discrepancies.</p>
+
+    <div class="callout callout-info">
+      <div class="callout-title">Single-node design</div>
+      Firn currently operates as a single-node service. The cache is in-process (not distributed). Horizontal scaling would require a shared cache layer or request routing, which is not yet implemented.
+    </div>
+
+    <h2>Serialisation</h2>
+    <p>Cached result sets are serialised with <strong>bincode 2</strong> (serde path). This was benchmarked against realistic payloads:</p>
+    <table>
+      <thead><tr><th>Result set size</th><th>Round-trip p99</th></tr></thead>
+      <tbody>
+        <tr><td>10 results (1536-dim)</td><td>32 &micro;s</td></tr>
+        <tr><td>100 results (1536-dim)</td><td>318 &micro;s</td></tr>
+        <tr><td>1000 results (1536-dim)</td><td>3 ms</td></tr>
+      </tbody>
+    </table>
+    <p>The architecture includes a documented upgrade path to <code>rkyv</code> (zero-copy deserialisation) if serialisation overhead becomes a bottleneck at scale.</p>
+
+  </main>
+</div>
+
+<footer class="site-footer">
+  Firn is open source under the MIT License.
+  <a href="https://github.com/gordonmurray/firnflow">GitHub</a>
+</footer>
+
+<script src="main.js"></script>
+</body>
+</html>

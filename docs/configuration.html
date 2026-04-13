@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Configuration - Firn</title>
+  <meta name="description" content="All environment variables for configuring Firn: S3 backends, cache sizing, bind address, and logging.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="site-header">
+  <button class="menu-toggle" aria-label="Toggle sidebar">
+    <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h14M3 10h14M3 14h14"/></svg>
+  </button>
+  <a href="index.html" class="logo">firn<span>flow</span></a>
+  <nav>
+    <a href="quickstart.html">Quickstart</a>
+    <a href="api.html">API</a>
+    <a href="configuration.html" class="active">Config</a>
+    <a href="architecture.html">Architecture</a>
+    <a href="deployment.html">Deploy</a>
+    <a href="monitoring.html">Monitoring</a>
+    <a href="https://github.com/gordonmurray/firnflow">GitHub</a>
+  </nav>
+</header>
+
+<div class="layout">
+  <aside class="sidebar">
+    <div class="sidebar-section">
+      <h4>Getting started</h4>
+      <a href="quickstart.html">Quickstart</a>
+      <a href="configuration.html" class="active">Configuration</a>
+      <a href="deployment.html">Deployment</a>
+    </div>
+    <div class="sidebar-section">
+      <h4>Using Firn</h4>
+      <a href="api.html">API reference</a>
+      <a href="monitoring.html">Monitoring</a>
+    </div>
+    <div class="sidebar-section">
+      <h4>Internals</h4>
+      <a href="architecture.html">Architecture</a>
+    </div>
+  </aside>
+
+  <main class="content">
+    <h1>Configuration</h1>
+    <p class="subtitle">Firn is configured entirely through environment variables. Only <code>FIRNFLOW_S3_BUCKET</code> is required; everything else has a sensible default.</p>
+
+    <h2>Core settings</h2>
+
+    <table>
+      <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><code>FIRNFLOW_S3_BUCKET</code></td>
+          <td><em>required</em></td>
+          <td>S3 bucket that roots every namespace. Each namespace creates its data under <code>s3://bucket/namespace/</code>.</td>
+        </tr>
+        <tr>
+          <td><code>FIRNFLOW_BIND</code></td>
+          <td><code>0.0.0.0:3000</code></td>
+          <td>Address and port for the HTTP listener. Use <code>127.0.0.1:3000</code> to restrict to localhost.</td>
+        </tr>
+        <tr>
+          <td><code>RUST_LOG</code></td>
+          <td><code>info</code></td>
+          <td>Log level filter. Supports <code>tracing</code> directives like <code>firnflow_api=debug,firnflow_core=trace</code>.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>S3 storage backend</h2>
+    <p>These variables control which S3-compatible backend Firn connects to. For real AWS S3, you typically only need <code>FIRNFLOW_S3_BUCKET</code> and <code>FIRNFLOW_S3_REGION</code>. Credentials come from the standard AWS chain (instance profile, environment, <code>~/.aws/credentials</code>).</p>
+
+    <table>
+      <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><code>FIRNFLOW_S3_ENDPOINT</code></td>
+          <td><em>unset (use AWS)</em></td>
+          <td>Custom S3 endpoint URL. Set this for MinIO, R2, GCS, or any S3-compatible backend. When set, path-style addressing and plain HTTP are automatically enabled.</td>
+        </tr>
+        <tr>
+          <td><code>FIRNFLOW_S3_ACCESS_KEY</code></td>
+          <td><em>unset</em></td>
+          <td>S3 access key ID. Falls back to the standard AWS credential chain if not set.</td>
+        </tr>
+        <tr>
+          <td><code>FIRNFLOW_S3_SECRET_KEY</code></td>
+          <td><em>unset</em></td>
+          <td>S3 secret access key. Falls back to the standard AWS credential chain if not set.</td>
+        </tr>
+        <tr>
+          <td><code>FIRNFLOW_S3_REGION</code></td>
+          <td><code>us-east-1</code></td>
+          <td>AWS region for the bucket.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>AWS S3</h3>
+    <p>For production AWS deployments, let the standard credential chain handle authentication (instance profiles, ECS task roles, or <code>~/.aws/credentials</code>).</p>
+    <pre><code>FIRNFLOW_S3_BUCKET=my-firn-bucket
+FIRNFLOW_S3_REGION=eu-west-1</code></pre>
+
+    <h3>MinIO</h3>
+    <pre><code>FIRNFLOW_S3_BUCKET=firnflow
+FIRNFLOW_S3_ENDPOINT=http://localhost:9000
+FIRNFLOW_S3_ACCESS_KEY=minioadmin
+FIRNFLOW_S3_SECRET_KEY=minioadmin</code></pre>
+
+    <h3>Cloudflare R2</h3>
+    <p>R2 provides an S3-compatible API. Use your R2 endpoint and API tokens.</p>
+    <pre><code>FIRNFLOW_S3_BUCKET=firn-r2
+FIRNFLOW_S3_ENDPOINT=https://&lt;account-id&gt;.r2.cloudflarestorage.com
+FIRNFLOW_S3_ACCESS_KEY=&lt;r2-access-key&gt;
+FIRNFLOW_S3_SECRET_KEY=&lt;r2-secret-key&gt;
+FIRNFLOW_S3_REGION=auto</code></pre>
+
+    <div class="callout callout-warning">
+      <div class="callout-title">Provider validation</div>
+      Firn has been validated against <strong>MinIO</strong> and <strong>AWS S3</strong> with concurrent writer stress tests. R2 and GCS are expected to work but have not been formally validated. See the <a href="https://github.com/gordonmurray/firnflow/blob/main/docs/provider-support.md">provider support matrix</a> for details.
+    </div>
+
+    <h2>Cache settings</h2>
+    <p>The foyer hybrid cache has two tiers: a RAM tier for the hottest data and an NVMe tier for overflow. Both tiers are shared across all namespaces.</p>
+
+    <table>
+      <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><code>FIRNFLOW_CACHE_MEMORY_BYTES</code></td>
+          <td><code>67108864</code> (64 MB)</td>
+          <td>RAM tier capacity in bytes. This is the L1 cache; hits here are sub-microsecond.</td>
+        </tr>
+        <tr>
+          <td><code>FIRNFLOW_CACHE_NVME_PATH</code></td>
+          <td><code>/tmp/firnflow-cache</code></td>
+          <td>Directory for the foyer NVMe-tier block file. In production, point this at a fast local SSD. The Docker image defaults to <code>/var/lib/firnflow/cache</code>.</td>
+        </tr>
+        <tr>
+          <td><code>FIRNFLOW_CACHE_NVME_BYTES</code></td>
+          <td><code>268435456</code> (256 MB)</td>
+          <td>NVMe tier capacity in bytes. This is the L2 cache; hits here avoid S3 but are slower than RAM.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Cache sizing guidance</h3>
+    <p>The right cache size depends on your working set. A cached result for a 10-result query with 1536-dim vectors is roughly 62 KB. Some rules of thumb:</p>
+
+    <table>
+      <thead><tr><th>Working set</th><th>RAM tier</th><th>NVMe tier</th></tr></thead>
+      <tbody>
+        <tr><td>Development / testing</td><td>64 MB</td><td>256 MB</td></tr>
+        <tr><td>Small production (hundreds of cached queries)</td><td>256 MB</td><td>1 GB</td></tr>
+        <tr><td>Large production (thousands of cached queries)</td><td>1 GB</td><td>10 GB</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout callout-info">
+      <div class="callout-title">Cache is ephemeral</div>
+      The cache is a performance optimisation, not durable storage. Data on S3 is always the source of truth. If the cache is lost (restart, crash, disk failure), Firn repopulates it transparently on the next query.
+    </div>
+
+    <h2>Docker Compose override</h2>
+    <p>To customise settings for local development, create a <code>docker-compose.override.yml</code>:</p>
+    <pre><code># docker-compose.override.yml
+services:
+  firnflow:
+    environment:
+      FIRNFLOW_CACHE_MEMORY_BYTES: "268435456"   # 256 MB RAM cache
+      FIRNFLOW_CACHE_NVME_BYTES: "1073741824"    # 1 GB NVMe cache
+      RUST_LOG: "firnflow_core=debug,firnflow_api=debug"</code></pre>
+
+    <h2>Full example</h2>
+    <p>A complete production configuration against AWS S3:</p>
+    <pre><code># Production environment
+FIRNFLOW_S3_BUCKET=prod-firn-vectors
+FIRNFLOW_S3_REGION=eu-west-1
+FIRNFLOW_BIND=0.0.0.0:3000
+FIRNFLOW_CACHE_MEMORY_BYTES=268435456
+FIRNFLOW_CACHE_NVME_PATH=/var/lib/firnflow/cache
+FIRNFLOW_CACHE_NVME_BYTES=10737418240
+RUST_LOG=info</code></pre>
+
+  </main>
+</div>
+
+<footer class="site-footer">
+  Firn is open source under the MIT License.
+  <a href="https://github.com/gordonmurray/firnflow">GitHub</a>
+</footer>
+
+<script src="main.js"></script>
+</body>
+</html>
